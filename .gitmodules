@@ -1,0 +1,3 @@
+[submodule "runtime-js/third_party/quickjs-ng"]
+	path = runtime-js/third_party/quickjs-ng
+	url = https://github.com/quickjs-ng/quickjs.git
