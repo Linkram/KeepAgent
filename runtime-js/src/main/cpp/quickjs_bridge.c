@@ -60,6 +60,19 @@ static void call_java_string(Host *h, JNIEnv *env, const char *method, const cha
     (*local_env)->DeleteLocalRef(local_env, cls);
 }
 
+/* Call a Java method: String f(). Returns NULL on error/absent. */
+static jstring call_java_noarg_ret(Host *h, JNIEnv *env, const char *method) {
+    if (!h || !h->callbacks) return NULL;
+    jclass cls = (*env)->GetObjectClass(env, h->callbacks);
+    if (!cls) return NULL;
+    jmethodID mid = (*env)->GetMethodID(env, cls, method, "()Ljava/lang/String;");
+    if (!mid) { (*env)->ExceptionClear(env); (*env)->DeleteLocalRef(env, cls); return NULL; }
+    jstring ret = (jstring)(*env)->CallObjectMethod(env, h->callbacks, mid);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); ret = NULL; }
+    (*env)->DeleteLocalRef(env, cls);
+    return ret;
+}
+
 /* Call a Java method: String f(String). Returns NULL on error/absent. */
 static jstring call_java_string_ret(Host *h, JNIEnv *env, const char *method, const char *arg) {
     if (!h || !h->callbacks) return NULL;
@@ -109,7 +122,7 @@ static JSValue js_native_workspace_path(JSContext *ctx, JSValueConst this_val, i
     if (h && h->vm && h->callbacks) {
         JNIEnv *env = NULL;
         if ((*h->vm)->GetEnv(h->vm, (void **)&env, JNI_VERSION_1_6) == JNI_OK) {
-            jstring ret = call_java_string_ret(h, env, "workspacePath", NULL);
+            jstring ret = call_java_noarg_ret(h, env, "workspacePath");
             if (ret) {
                 const char *s = (*env)->GetStringUTFChars(env, ret, NULL);
                 JSValue v = JS_NewString(ctx, s ? s : "");

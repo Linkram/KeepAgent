@@ -48,7 +48,7 @@ class JsHost(private val callbacks: Callbacks) {
 
     /** Calls a global function with two string args; returns its string result. */
     fun callFunction(name: String, arg1: String, arg2: String?): String =
-        if (handle == 0L) "" else nativeCallTwo(handle, name, arg1, arg2)
+        if (handle == 0L) "" else nativeCallTwo(handle, name, arg1, arg2) ?: ""
 
     fun close() {
         if (handle != 0L) {

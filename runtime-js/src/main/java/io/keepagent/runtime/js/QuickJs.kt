@@ -8,7 +8,6 @@ package io.keepagent.runtime.js
  */
 object QuickJs {
 
-    @Volatile
     val isLoaded: Boolean = try {
         System.loadLibrary("keepagent_js")
         true

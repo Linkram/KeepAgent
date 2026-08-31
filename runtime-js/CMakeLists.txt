@@ -30,8 +30,14 @@ target_include_directories(keepagent_js PRIVATE ${QJS_DIR})
 target_compile_definitions(keepagent_js PRIVATE _GNU_SOURCE QUICKJS_NG_BUILD)
 target_compile_features(keepagent_js PRIVATE c_std_11)
 
-find_package(JNI REQUIRED)
-target_include_directories(keepagent_js PRIVATE ${JNI_INCLUDE_DIRS})
+# JNI headers: on Android the NDK sysroot provides jni.h — no host JDK
+# required. (Host-side builds, if ever, fall back to find_package(JNI).)
+if(ANDROID)
+    target_include_directories(keepagent_js PRIVATE ${CMAKE_SYSROOT}/usr/include)
+else()
+    find_package(JNI REQUIRED)
+    target_include_directories(keepagent_js PRIVATE ${JNI_INCLUDE_DIRS})
+endif()
 
 find_package(Threads REQUIRED)
 find_library(M_LIB m)
