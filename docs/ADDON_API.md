@@ -7,12 +7,17 @@ and `core/host` (lifecycle). Reference implementation: `addons/hello-tool`.
 
 | Tier | Runs as | Isolation | Status |
 |------|---------|-----------|--------|
-| 1 | In-process Kotlin module (signature-bound) | Process | M1–M2 |
-| 2 | Interpreted TypeScript (bundled to JS) | quickjs-ng JS sandbox | **M0 (in-process)** |
+| 1 | In-process Kotlin module (signature-bound) | Process | **M1** — `provider-openai`, `tools-core` |
+| 2 | Interpreted TypeScript (bundled to JS) | quickjs-ng JS sandbox | **M1 (helper process)** |
 | 3 | External process (MCP-like endpoint) | OS process | M3 |
 
-M0 runs Tier-2 in-process; M1 moves the engine to a helper process (same
-prelude, IPC transport). See ADR-0001.
+M1 runs Tier-2 in a dedicated helper process (`:js`) behind the AIDL
+boundary `KeepJsService` / `IKeepJsCallback` — one quickjs-ng engine per
+add-on, so a crashing or hanging add-on costs the helper, not the app. If
+the helper is unreachable the host falls back to the in-process engine;
+the prelude and the add-on code are identical either way (setting:
+`general/engineMode = in-process` forces the fallback explicitly).
+See ADR-0001.
 
 ## The manifest — `addon.json`
 
@@ -46,7 +51,7 @@ prelude, IPC transport). See ADR-0001.
 
 Validation is a hard gate: an invalid manifest never initializes (spec §5.4).
 
-## Permissions (known names, M0)
+## Permissions (known names, v1)
 
 `log` · `settings:read` · `settings:write` · `workspace:read` ·
 `workspace:write` · `network` · `device:screenshot` ·
@@ -64,8 +69,9 @@ launch, `package:install` → system installer UI (never silent),
 `test.runner` · `dev.toolchain` · `console.command` · `connection` ·
 `notification` · `settings.schema`
 
-M0 implements registration for `tool`; the others slot in as their
-milestones land.
+M1 implements registration for `tool` (all tiers) and `llm.provider`
+(Tier-1: the `provider-openai` add-on, id `openai-compatible`). The others
+slot in as their milestones land.
 
 ## Test targets (`test.runner`, M2+)
 
@@ -102,16 +108,28 @@ ka.registerTool(spec)        // register a tool; spec:
 ```
 
 The handler receives `(args, ctx)` where `ctx = { log, workspacePath }`.
-Return a value — it is JSON-serialized to the host (M0: objects with a `text`
-field are conventional).
+Return a value — the prelude normalizes it to the host result contract:
+
+| Handler returns | Host sees |
+|-----------------|-----------|
+| `"some string"` | `{"ok":true,"text":"some string"}` |
+| `{ "text": "..." }` | `{"ok":true,"text":"..."}` |
+| `{ "error": "..." }` | `{"ok":false,"error":"..."}` |
+| anything else | `{"ok":true,"text": JSON.stringify(value)}` |
+
+The same contract is what Tier-1 handlers return directly, so the agent
+loop sees one shape from every tier.
 
 ## Lifecycle
 
 ```
 discover (scan addons dir)
   -> validate (manifest)            invalid -> status INVALID, never runs
-  -> enable                          tier 1/3 -> UNAVAILABLE in M0
-  -> initialize (eval entry)         error  -> status FAILED, error in Console
+  -> enable                          tier 3  -> UNAVAILABLE (M3)
+  -> initialize                      tier 1  -> in-process (M1)
+                                     tier 2  -> sandbox: helper process over IPC,
+                                                in-process fallback (M1)
+                                     error   -> status FAILED, error in Console
   -> running                         registerTool calls populate the registry
 ```
 
@@ -127,12 +145,14 @@ Every step emits an event to the event stream — watch the Console tab.
 5. Bundle TypeScript with esbuild:
    `npx esbuild src/index.ts --bundle --format=iife --outfile=index.js`
 
-## M0 limits (by design)
+## M1 limits (by design)
 
 - **Synchronous tool handlers only.** The C bridge has no Promise resolution
-  yet; `await` in a handler will hang. Async handlers land in M1.
-- **No network / filesystem / timers** in the sandbox. I/O goes through
-  `ka.*` and host permissions (M1: `workspace:read`/`write` host calls).
-- **In-process engine.** The sandbox is the JS world, not a separate process
-  (M1, per ADR-0001).
-- **No ESM / modules** — one flat script per add-on for M0.
+  yet; `await` in a handler will hang. Async handlers land in M2.
+- **No network / filesystem / timers** in the sandbox. `ka.*` is the only
+  surface; file and network I/O are Tier-1 host capabilities today
+  (`tools-core`), with sandbox-side host calls for `workspace:read`/`write`
+  in M2.
+- **One engine per add-on**, in the `:js` helper process (AIDL IPC), with
+  automatic in-process fallback. Engines do not talk to each other (M2+).
+- **No ESM / modules** — one flat script per add-on.
