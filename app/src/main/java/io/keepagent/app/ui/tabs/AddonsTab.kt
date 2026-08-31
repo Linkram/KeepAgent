@@ -1,5 +1,6 @@
 package io.keepagent.app.ui.tabs
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,7 +45,7 @@ fun AddonsTab(manager: AddonManager, eventBus: EventBus) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            text = "Tier-2 sandbox: quickjs-ng (in-process for M0) · Add-on API v1",
+            text = "Tier-2 sandbox: quickjs-ng (helper process :js, M1) · Add-on API v1",
             fontSize = 10.sp,
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -94,7 +95,7 @@ private fun AddonCard(record: AddonRecord) {
                 text = it,
                 fontSize = 10.sp,
                 color = TextSecondary,
-                modifier = Modifier.padding(horizontal = 12.dp, bottom = 4.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
             )
         }
         if (record.tools.isNotEmpty()) {
@@ -102,7 +103,7 @@ private fun AddonCard(record: AddonRecord) {
                 text = "tools: ${record.tools.joinToString(", ")}",
                 fontSize = 10.sp,
                 color = TextSecondary,
-                modifier = Modifier.padding(horizontal = 12.dp, bottom = 6.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
             )
         }
         if (record.status == AddonStatus.INITIALIZED && "hello" in record.tools) {
@@ -114,7 +115,7 @@ private fun AddonCard(record: AddonRecord) {
                     text = "✗ $err",
                     fontSize = 10.sp,
                     color = Color(0xFFE57373),
-                    modifier = Modifier.padding(horizontal = 12.dp, bottom = 4.dp),
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
                 )
             }
         }
@@ -141,7 +142,7 @@ private fun StatusChip(status: AddonStatus) {
  */
 @Composable
 private fun HelloToolDemo(addonId: String) {
-    val manager = io.keepagent.app.KeepAgentApp.Holder.app.addonManager
+    val manager = io.keepagent.app.Holder.app.addonManager
     var result by remember { mutableStateOf<String?>(null) }
 
     Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {

@@ -28,11 +28,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.keepagent.app.KeepAgentApp
+import io.keepagent.app.Holder
 import io.keepagent.app.ui.tabs.AddonsTab
 import io.keepagent.app.ui.tabs.ChatTab
 import io.keepagent.app.ui.tabs.ConnectionsTab
@@ -55,7 +56,7 @@ import io.keepagent.app.ui.theme.WallBase
  */
 @Composable
 fun KeepAgentShell() {
-    val app = KeepAgentApp.Holder.app
+    val app = Holder.app
     var selected by remember { mutableIntStateOf(0) }
 
     Column(
@@ -109,15 +110,26 @@ private fun HeaderBar() {
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val app = Holder.app
+        val model = app.currentModelId()
+        val workspace = runCatching { app.workspaceManager.activeName() }.getOrDefault("—")
+        val fileAccess = runCatching {
+            io.keepagent.core.settings.FileAccess.from(
+                app.settingsStore.getString(
+                    io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                    "fileAccess",
+                ),
+            ).name.lowercase()
+        }.getOrDefault("workspace")
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Qwen 3.8 27b",
+                text = model ?: "no model configured",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = TextPrimary,
             )
             Text(
-                text = "M0 spike — provider add-on lands in M1",
+                text = "workspace: $workspace · files: $fileAccess",
                 fontSize = 10.sp,
                 color = TextSecondary,
             )
@@ -147,18 +159,18 @@ private fun ContextGauge(fraction: Float) {
                 color = TileStone,
                 startAngle = 0f,
                 sweepAngle = 360f,
-                useStroke = true,
-                strokeWidth = stroke,
+                useCenter = false,
+                style = Stroke(width = stroke),
             )
             drawArc(
                 color = AmberStatus,
                 startAngle = -90f,
                 sweepAngle = sweep,
-                useStroke = true,
-                strokeWidth = stroke,
+                useCenter = false,
+                style = Stroke(width = stroke),
             )
         }
-        Text("M0", fontSize = 8.sp, color = TextSecondary)
+        Text("M1", fontSize = 8.sp, color = TextSecondary)
     }
 }
 

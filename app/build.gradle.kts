@@ -12,8 +12,8 @@ android {
         applicationId = "io.keepagent"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-m0"
+        versionCode = 2
+        versionName = "0.1.0-m1"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -41,7 +41,13 @@ dependencies {
     implementation(project(":core:settings"))
     implementation(project(":core:storage"))
     implementation(project(":core:host"))
+    implementation(project(":core:llm"))
+    implementation(project(":core:agent"))
+    implementation(project(":core:fs"))
+    implementation(project(":core:workspace"))
     implementation(project(":runtime-js"))
+    implementation(project(":addons:tools-core"))
+    implementation(project(":addons:provider-openai"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

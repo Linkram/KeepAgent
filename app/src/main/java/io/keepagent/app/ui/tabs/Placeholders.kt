@@ -25,13 +25,6 @@ fun TestTab() = PlaceholderScreen(
 )
 
 @Composable
-fun WorkspacesTab() = PlaceholderScreen(
-    title = "Workspaces",
-    body = "Workspaces scope file access (ADR-0002: Workspace / Full toggle). " +
-        "Creating and selecting workspaces lands in M1 (F-007). M0: shell only.",
-)
-
-@Composable
 fun ConnectionsTab() = PlaceholderScreen(
     title = "Connections",
     body = "Tier-3 endpoints — external processes (MCP-like) over loopback " +

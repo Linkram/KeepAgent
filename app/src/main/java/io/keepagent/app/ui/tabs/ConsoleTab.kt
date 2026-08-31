@@ -35,7 +35,7 @@ import java.util.Locale
  */
 @Composable
 fun ConsoleTab(eventBus: EventBus) {
-    val events by remember { mutableStateOf(emptyList<AgentEvent>()) }
+    var events by remember { mutableStateOf(emptyList<AgentEvent>()) }
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
 
     LaunchedEffect(eventBus) {
