@@ -1,0 +1,12 @@
+{
+  "id": "io.keepagent.samples.hello-tool",
+  "name": "Hello Tool (sample)",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "tier": 2,
+  "entry": "index.js",
+  "permissions": ["log"],
+  "provides": ["tool"],
+  "depends": [],
+  "minHost": "0.1.0"
+}

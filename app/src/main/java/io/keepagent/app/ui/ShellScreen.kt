@@ -1,0 +1,192 @@
+package io.keepagent.app.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import io.keepagent.app.KeepAgentApp
+import io.keepagent.app.ui.tabs.AddonsTab
+import io.keepagent.app.ui.tabs.ChatTab
+import io.keepagent.app.ui.tabs.ConnectionsTab
+import io.keepagent.app.ui.tabs.ConsoleTab
+import io.keepagent.app.ui.tabs.TestTab
+import io.keepagent.app.ui.tabs.WorkspacesTab
+import io.keepagent.app.ui.theme.AmberStatus
+import io.keepagent.app.ui.theme.BarStone
+import io.keepagent.app.ui.theme.BevelLight
+import io.keepagent.app.ui.theme.TileStone
+import io.keepagent.app.ui.theme.TileStoneSelected
+import io.keepagent.app.ui.theme.TextPrimary
+import io.keepagent.app.ui.theme.TextSecondary
+import io.keepagent.app.ui.theme.WallBase
+
+/**
+ * The shell: stone top bar (model header + 6 beveled tiles), then the active
+ * tab over the subtle wall backdrop. Tab labels are the plain product names —
+ * the theme is visual only (F-014).
+ */
+@Composable
+fun KeepAgentShell() {
+    val app = KeepAgentApp.Holder.app
+    var selected by remember { mutableIntStateOf(0) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(WallBase),
+    ) {
+        // Top bar — header row, then the 6 tab tiles.
+        Column(modifier = Modifier.background(BarStone)) {
+            HeaderBar()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+            ) {
+                TABS.forEachIndexed { index, label ->
+                    TabTile(
+                        label = label,
+                        selected = index == selected,
+                        onClick = { selected = index },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            HorizontalDivider(color = BevelLight, thickness = 1.dp)
+        }
+
+        // Active tab over the wall backdrop.
+        Box(modifier = Modifier.fillMaxSize()) {
+            CastleWallBackground(modifier = Modifier.fillMaxSize())
+            when (selected) {
+                0 -> ChatTab()
+                1 -> TestTab()
+                2 -> WorkspacesTab()
+                3 -> ConsoleTab(app.eventBus)
+                4 -> AddonsTab(app.addonManager, app.eventBus)
+                else -> ConnectionsTab()
+            }
+        }
+    }
+}
+
+private val TABS = listOf("Chat", "Test", "Workspaces", "Console", "Add-ons", "Connections")
+
+@Composable
+private fun HeaderBar() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Qwen 3.8 27b",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+            )
+            Text(
+                text = "M0 spike — provider add-on lands in M1",
+                fontSize = 10.sp,
+                color = TextSecondary,
+            )
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text("Avg. Speed", fontSize = 8.sp, color = TextSecondary)
+            Text("— t/s", fontSize = 10.sp, color = AmberStatus)
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            Text("Context used", fontSize = 8.sp, color = TextSecondary)
+            Text("—/—", fontSize = 10.sp, color = AmberStatus)
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        ContextGauge(fraction = 0.5f)
+    }
+}
+
+/** Small context gauge ring, echoing the mockup header. */
+@Composable
+private fun ContextGauge(fraction: Float) {
+    Box(modifier = Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val stroke = 3.dp.toPx()
+            val sweep = 360f * fraction.coerceIn(0f, 1f)
+            drawArc(
+                color = TileStone,
+                startAngle = 0f,
+                sweepAngle = 360f,
+                useStroke = true,
+                strokeWidth = stroke,
+            )
+            drawArc(
+                color = AmberStatus,
+                startAngle = -90f,
+                sweepAngle = sweep,
+                useStroke = true,
+                strokeWidth = stroke,
+            )
+        }
+        Text("M0", fontSize = 8.sp, color = TextSecondary)
+    }
+}
+
+@Composable
+private fun TabTile(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(3.dp)
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .clip(shape)
+            .background(if (selected) TileStoneSelected else TileStone)
+            .border(width = 1.dp, color = if (selected) BevelLight else Color.Transparent, shape = shape)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) TextPrimary else TextSecondary,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+        )
+    }
+}
