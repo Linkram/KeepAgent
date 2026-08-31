@@ -90,10 +90,16 @@ Reference: `addons/hello-tool`.
 
 ## Vendored code
 
-`runtime-js/third_party/quickjs-ng/` is a shallow clone of
-[quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs). Only four
-library sources are compiled (`dtoa.c libregexp.c libunicode.c quickjs.c`);
-`quickjs-libc.c` and the CLI tools are **not** included.
+`runtime-js/third_party/quickjs-ng/` is a submodule of
+[quickjs-ng/quickjs](https://github.com/quickjs-ng/quickjs). Fresh clones
+need:
+
+```powershell
+git submodule update --init
+```
+
+Only four library sources are compiled (`dtoa.c libregexp.c libunicode.c
+quickjs.c`); `quickjs-libc.c` and the CLI tools are **not** included.
 
 ## Known gaps (tracked in FEATURES.md)
 
