@@ -74,13 +74,21 @@ Settings keys (namespaced JSON in `SettingsStore`):
 | `general` | `fileAccess` | `workspace` (default, ADR-0002) · `full` |
 | `general` | `engineMode` | `process` (default — sandbox in `:js` helper) · `in-process` |
 | `sessions` | `activeWorkspace` | active workspace name |
+| `connections` | `list`, `activeId` | API connections (JSON array) + the active one, mirrored into `model` |
 
 ## What's in M1
 
 - **Shell**: 6 tabs — `Chat · Test · Workspaces · Console · Add-ons ·
   Connections` — with the mockup's stone top bar, model header + context
-  gauge, and a subtle wall backdrop. The theme is **visual only**: tab labels
-  and all code identifiers are plain (no themed naming).
+  gauge, and a subtle wall backdrop. The tab tiles carry the mockup's sigil
+  icons (bubble, play, folder, terminal, puzzle, plug) as vector drawables.
+  The theme is **visual only**: tab labels and all code identifiers are plain
+  (no themed naming).
+- **Connections (F-010 surface)**: named OpenAI-compatible API endpoints —
+  OpenRouter, a local server, or any custom base URL. Add/edit/delete, and
+  set the active one: its `baseUrl` / `apiKey` / `model` mirror into the
+  `model` profile that the provider and the chat model chip read, so
+  switching connections changes the model without a restart.
 - **LLM provider (F-001)**: `core/llm` — an OpenAI-compatible SSE client
   (streaming deltas, tool calls, `reasoning_content` thinking, final usage)
   wrapped by the Tier-1 `provider-openai` add-on. The provider re-reads the

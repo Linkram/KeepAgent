@@ -55,6 +55,12 @@ class SettingsStore(context: Context) {
          * Read by the provider add-on on every use — no restart needed.
          */
         const val NS_MODEL = "model"
+
+        /**
+         * API connections (spec §14 Q4): `list` (JSON array of connections)
+         * and `activeId`. The active connection is mirrored into [NS_MODEL].
+         */
+        const val NS_CONNECTIONS = "connections"
     }
 }
 

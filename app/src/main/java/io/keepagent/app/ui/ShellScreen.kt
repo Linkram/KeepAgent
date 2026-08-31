@@ -4,20 +4,25 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,11 +34,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.app.Holder
+import io.keepagent.app.R
 import io.keepagent.app.ui.tabs.AddonsTab
 import io.keepagent.app.ui.tabs.ChatTab
 import io.keepagent.app.ui.tabs.ConnectionsTab
@@ -64,8 +71,12 @@ fun KeepAgentShell() {
             .fillMaxSize()
             .background(WallBase),
     ) {
-        // Top bar — header row, then the 6 tab tiles.
-        Column(modifier = Modifier.background(BarStone)) {
+        // Top bar — header row, then the 6 tab tiles (clears the status bar).
+        Column(
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .background(BarStone),
+        ) {
             HeaderBar()
             Row(
                 modifier = Modifier
@@ -73,9 +84,10 @@ fun KeepAgentShell() {
                     .height(IntrinsicSize.Min)
                     .padding(horizontal = 4.dp, vertical = 4.dp),
             ) {
-                TABS.forEachIndexed { index, label ->
+                TABS.forEachIndexed { index, (label, icon) ->
                     TabTile(
                         label = label,
+                        iconRes = icon,
                         selected = index == selected,
                         onClick = { selected = index },
                         modifier = Modifier.weight(1f),
@@ -100,7 +112,15 @@ fun KeepAgentShell() {
     }
 }
 
-private val TABS = listOf("Chat", "Test", "Workspaces", "Console", "Add-ons", "Connections")
+/** Tab sigils follow the mockup: bubble / play / folder / terminal / puzzle / plug. */
+private val TABS = listOf(
+    "Chat" to R.drawable.ic_tab_chat,
+    "Test" to R.drawable.ic_tab_test,
+    "Workspaces" to R.drawable.ic_tab_workspaces,
+    "Console" to R.drawable.ic_tab_console,
+    "Add-ons" to R.drawable.ic_tab_addons,
+    "Connections" to R.drawable.ic_tab_connections,
+)
 
 @Composable
 private fun HeaderBar() {
@@ -177,24 +197,33 @@ private fun ContextGauge(fraction: Float) {
 @Composable
 private fun TabTile(
     label: String,
+    iconRes: Int,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(3.dp)
-    Box(
+    Column(
         modifier = modifier
             .fillMaxHeight()
             .clip(shape)
             .background(if (selected) TileStoneSelected else TileStone)
             .border(width = 1.dp, color = if (selected) BevelLight else Color.Transparent, shape = shape)
             .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        contentAlignment = Alignment.Center,
+            .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            tint = if (selected) TextPrimary else TextSecondary,
+            modifier = Modifier.size(17.dp),
+        )
+        Spacer(modifier = Modifier.height(3.dp))
         Text(
             text = label,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) TextPrimary else TextSecondary,
             textAlign = TextAlign.Center,

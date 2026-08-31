@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Add-ons sigil: puzzle (mockup). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFEDEDED"
+        android:pathData="M20.5,11 L19,11 L19,7 C19,5.9 18.1,5 17,5 L13,5 L13,3.5 C13,2.1 11.9,1 10.5,1 C9.1,1 8,2.1 8,3.5 L8,5 L4,5 C2.9,5 2,5.9 2,7 L2,11 L3.5,11 C4.9,11 6,12.1 6,13.5 C6,14.9 4.9,16 3.5,16 L2,16 L2,20 C2,21.1 2.9,22 4,22 L8,22 L8,20.5 C8,19.1 9.1,18 10.5,18 C11.9,18 13,19.1 13,20.5 L13,22 L17,22 C18.1,22 19,21.1 19,20 L19,16 L20.5,16 C21.9,16 23,14.9 23,13.5 C23,12.1 21.9,11 20.5,11 Z" />
+</vector>

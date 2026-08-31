@@ -51,6 +51,8 @@ class KeepAgentApp : Application() {
         private set
     lateinit var chatController: ChatController
         private set
+    lateinit var connections: ConnectionsStore
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -113,6 +115,10 @@ class KeepAgentApp : Application() {
                 ToolsCoreAddon(fileService),
             ),
         )
+
+        // API connections (OpenRouter / local / custom) — the active one
+        // mirrors into the model profile read by the provider add-on.
+        connections = ConnectionsStore(settingsStore)
 
         // App-level controller: the conversation survives tab switches.
         chatController = ChatController(this)

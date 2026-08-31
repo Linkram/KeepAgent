@@ -14,12 +14,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -41,11 +41,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.app.Holder
+import io.keepagent.app.R
 import io.keepagent.core.agent.AgentRun
 import io.keepagent.core.agent.ApprovalMode
 import io.keepagent.core.agent.ApprovalRequest
@@ -94,6 +96,7 @@ fun ChatTab() {
             modelsError = modelsError,
             onModelSelected = { id ->
                 app.settingsStore.setString(SettingsStore.NS_MODEL, "model", id)
+                app.connections.syncActiveFromProfile()
             },
             onConfigure = { showConfig = true },
             approvalMode = ApprovalMode.from(
@@ -157,7 +160,9 @@ fun ChatTab() {
     }
 
     if (showConfig) {
+        val activeConn = app.connections.active()
         ModelConfigDialog(
+            title = activeConn?.let { "Model profile — ${it.name}" } ?: "Model profile",
             baseUrl = app.settingsStore.getString(SettingsStore.NS_MODEL, "baseUrl") ?: "",
             apiKey = app.settingsStore.getString(SettingsStore.NS_MODEL, "apiKey") ?: "",
             model = modelId ?: "",
@@ -165,6 +170,12 @@ fun ChatTab() {
                 app.settingsStore.setString(SettingsStore.NS_MODEL, "baseUrl", b.trim())
                 app.settingsStore.setString(SettingsStore.NS_MODEL, "apiKey", k.trim())
                 app.settingsStore.setString(SettingsStore.NS_MODEL, "model", m.trim())
+                // Keep the active connection record in step with the profile.
+                if (activeConn != null) {
+                    app.connections.update(
+                        activeConn.copy(baseUrl = b.trim(), apiKey = k.trim(), model = m.trim()),
+                    )
+                }
             },
             onDismiss = { showConfig = false },
         )
@@ -188,6 +199,7 @@ private fun ChatHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -209,9 +221,16 @@ private fun ChatHeader(
                 onFileAccess(FileAccess.entries.first { it.name.lowercase() == s })
             },
         )
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.width(4.dp))
         IconButton(onClick = onConfigure, modifier = Modifier.padding(2.dp)) {
-            Icon(Icons.Outlined.Settings, contentDescription = "Model profile", tint = TextSecondary)
+            Icon(
+                painter = painterResource(R.drawable.ic_gear),
+                contentDescription = "Model profile",
+                tint = TextSecondary,
+                modifier = Modifier
+                    .width(16.dp)
+                    .height(16.dp),
+            )
         }
     }
 }
@@ -464,6 +483,7 @@ private fun InputBar(value: String, onValueChange: (String) -> Unit, enabled: Bo
 
 @Composable
 private fun ModelConfigDialog(
+    title: String,
     baseUrl: String,
     apiKey: String,
     model: String,
@@ -475,7 +495,7 @@ private fun ModelConfigDialog(
     var m by remember { mutableStateOf(model) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Model profile") },
+        title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextField(

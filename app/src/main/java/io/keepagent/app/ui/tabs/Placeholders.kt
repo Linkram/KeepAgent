@@ -25,13 +25,6 @@ fun TestTab() = PlaceholderScreen(
 )
 
 @Composable
-fun ConnectionsTab() = PlaceholderScreen(
-    title = "Connections",
-    body = "Tier-3 endpoints — external processes (MCP-like) over loopback " +
-        "(F-010) — land in M3. M0: shell only.",
-)
-
-@Composable
 private fun PlaceholderScreen(title: String, body: String) {
     Column(
         modifier = Modifier
