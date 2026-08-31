@@ -18,7 +18,7 @@ data class AddonRecord(
     val manifest: AddonManifest?,
     val validationErrors: List<String>,
     var status: AddonStatus,
-    val statusDetail: String? = null,
+    var statusDetail: String? = null,
     val tools: MutableList<String> = mutableListOf(),
 ) {
     val id: String get() = manifest?.id ?: dirName

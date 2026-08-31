@@ -22,6 +22,7 @@ dependencies {
     implementation(project(":addons-api"))
     implementation(project(":core:events"))
     implementation(project(":core:settings"))
+    implementation(project(":core:storage"))
     implementation(project(":runtime-js"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)

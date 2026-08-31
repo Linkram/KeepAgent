@@ -1,10 +1,14 @@
 package io.keepagent.core.host
 
 import android.content.Context
+import io.keepagent.addonsapi.AddonManifest
 import io.keepagent.addonsapi.ToolRegistration
+import io.keepagent.addonsapi.llm.LlmProvider
+import io.keepagent.addonsapi.validate
 import io.keepagent.core.events.EventBus
 import io.keepagent.core.events.EventKind
 import io.keepagent.core.settings.SettingsStore
+import io.keepagent.core.storage.Storage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,16 +19,19 @@ import java.io.File
  * Owns the add-on lifecycle (spec §5.4):
  * discover → validate → enable → initialize → running.
  *
- * M0 runs Tier-2 add-ons in-process in the quickjs-ng sandbox (spec §13,
- * ADR-0001); separate-process isolation + IPC lands in M1.
+ * M1 runs Tier-1 add-ons in-process (compiled into the APK, spec §5.1) and
+ * Tier-2 add-ons in the quickjs-ng sandbox (spec §13, ADR-0001); the sandbox
+ * moves to a helper process over IPC in this milestone.
  */
 class AddonManager(
     private val context: Context,
     private val addonsDir: File,
     private val eventBus: EventBus,
     private val settings: SettingsStore,
+    private val storage: Storage,
     private val registry: CapabilityRegistry = CapabilityRegistry(),
     private val runtimeFactory: (addonId: String, workspacePath: String) -> AddonRuntime,
+    private val tier1Addons: List<Tier1Addon> = emptyList(),
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
 
@@ -39,6 +46,7 @@ class AddonManager(
 
     /** Seeds samples, discovers, validates, and initializes. Run off the main thread. */
     fun start(workspacePath: String) {
+        initializeTier1(workspacePath)
         val repository = AddonRepository(addonsDir)
         repository.seedFromAssets(context.assets)
         val discovered = repository.discover()
@@ -81,11 +89,84 @@ class AddonManager(
             else -> {
                 record.status = AddonStatus.UNAVAILABLE
                 record.statusDetail =
-                    "Tier ${manifest.tier} not implemented in M0 (in-process Kotlin modules and external connections land in M1–M3)"
+                    "Tier ${manifest.tier} unavailable in M1 (external connections over loopback land in M3)"
                 eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} pending: ${record.statusDetail}")
             }
         }
         refreshRecords()
+    }
+
+    private fun initializeTier1(workspacePath: String) {
+        tier1Addons.forEach { addon ->
+            val manifest = addon.manifest
+            val record = AddonRecord(
+                dirName = BUILTIN_PREFIX + manifest.id,
+                manifest = manifest,
+                validationErrors = manifest.validate().errors,
+                status = AddonStatus.DISCOVERED,
+            )
+            records[record.dirName] = record
+            if (record.validationErrors.isNotEmpty()) {
+                record.status = AddonStatus.INVALID
+                eventBus.emit(
+                    EventKind.ADDON,
+                    "host",
+                    "built-in add-on ${manifest.id} invalid: " + record.validationErrors.firstOrNull(),
+                )
+                refreshRecords()
+                return@forEach
+            }
+            eventBus.emit(
+                EventKind.ADDON,
+                "host",
+                "built-in add-on ${manifest.id} v${manifest.version} discovered (tier 1, in-process)",
+            )
+            record.status = AddonStatus.ENABLED
+            try {
+                addon.initialize(Tier1HostImpl(manifest, workspacePath))
+                record.status = AddonStatus.INITIALIZED
+                record.tools.addAll(
+                    registry.tools()
+                        .filter { it.addonId == manifest.id }
+                        .map { it.tool.name },
+                )
+                eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} initialized in-process")
+            } catch (e: Exception) {
+                record.status = AddonStatus.FAILED
+                record.statusDetail = e.message
+                eventBus.emit(EventKind.ERROR, "host", "add-on ${manifest.id} init failed: ${e.message}")
+            }
+            refreshRecords()
+        }
+    }
+
+    private inner class Tier1HostImpl(
+        private val manifest: AddonManifest,
+        private val wsPath: String,
+    ) : Tier1Host {
+        override val context: Context get() = this@AddonManager.context
+        override val eventBus: EventBus get() = this@AddonManager.eventBus
+        override val settings: SettingsStore get() = this@AddonManager.settings
+        override val storage: Storage get() = this@AddonManager.storage
+        override val workspacePath: String get() = wsPath
+
+        override fun registerTool(tool: ToolRegistration, handler: (String) -> String) {
+            registry.registerTool(manifest.id, tool, handler)
+            eventBus.emit(
+                EventKind.TOOL,
+                manifest.id,
+                "tool '${tool.name}' registered (${tool.permission.name.lowercase()})",
+            )
+        }
+
+        override fun registerProvider(provider: LlmProvider) {
+            registry.registerProvider(manifest.id, provider)
+            eventBus.emit(EventKind.ADDON, manifest.id, "provider '${provider.id}' registered")
+        }
+    }
+
+    companion object {
+        const val BUILTIN_PREFIX = "builtin:"
     }
 
     private fun initializeTier2(record: AddonRecord, workspacePath: String) {
@@ -144,6 +225,17 @@ class AddonManager(
             ?: return """{"ok":false,"error":"no such tool: $name"}"""
         val record = records.values.firstOrNull { it.id == entry.addonId }
             ?: return """{"ok":false,"error":"add-on offline"}"""
+
+        // Tier-1: in-process handler.
+        val handler = entry.handler
+        if (handler != null) {
+            eventBus.emit(EventKind.TOOL, entry.addonId, "tool '$name' invoked (tier 1)")
+            val result = handler(argsJson)
+            eventBus.emit(EventKind.TOOL, entry.addonId, "tool '$name' finished (tier 1)")
+            return result
+        }
+
+        // Tier-2: sandbox runtime.
         val runtime = runtimes[record.dirName]
             ?: return """{"ok":false,"error":"add-on runtime not active"}"""
         eventBus.emit(EventKind.TOOL, entry.addonId, "tool '$name' invoked")

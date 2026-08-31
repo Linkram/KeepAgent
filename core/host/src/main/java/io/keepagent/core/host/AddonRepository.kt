@@ -33,7 +33,11 @@ class AddonRepository(
             val childAssetPath = "$assetDir/$child"
             val grandchildren = assets.list(childAssetPath)
             if (grandchildren == null || grandchildren.isEmpty()) {
-                runCatching { assets.open(childAssetPath).use { it.copyTo(File(intoDir, child)) } }
+                runCatching {
+                    File(intoDir, child).outputStream().use { out ->
+                        assets.open(childAssetPath).use { it.copyTo(out) }
+                    }
+                }
             } else {
                 val sub = File(intoDir, child)
                 sub.mkdirs()
@@ -48,7 +52,7 @@ class AddonRepository(
             if (!manifestFile.exists()) {
                 AddonRecord(dir.name, null, listOf("addon.json missing"), AddonStatus.INVALID)
             } else {
-                runCatching { json.parseFromString(AddonManifest.serializer(), manifestFile.readText()) }
+                runCatching { json.decodeFromString(AddonManifest.serializer(), manifestFile.readText()) }
                     .fold(
                         onSuccess = { m ->
                             val result = m.validate()
