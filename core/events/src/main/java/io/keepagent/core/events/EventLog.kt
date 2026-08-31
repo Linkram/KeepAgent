@@ -3,6 +3,7 @@ package io.keepagent.core.events
 import java.io.File
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -30,7 +31,7 @@ class EventLog(private val file: File) {
             put("source", event.source)
             put("summary", event.summary)
             if (event.detail.isNotEmpty()) {
-                put("detail", JsonObject(event.detail.mapValues { it.value }))
+                put("detail", JsonObject(event.detail.mapValues { (_, v) -> JsonPrimitive(v) }))
             }
         }
         val line = json.encodeToString(JsonObject.serializer(), obj)

@@ -14,7 +14,7 @@ class Storage(context: Context) {
     val addonsDir: File = File(root, "addons").apply { mkdirs() }
     val attachmentsDir: File = File(root, "attachments").apply { mkdirs() }
     val workspacesDir: File = File(root, "workspaces").apply { mkdirs() }
-    val eventsFile: File = File(root, "events", "stream.jsonl").apply { parentFile?.mkdirs() }
+    val eventsFile: File = File(File(root, "events"), "stream.jsonl").apply { parentFile?.mkdirs() }
 
     /** Stores bytes and returns their content hash; returns the existing hash if already present. */
     fun putAttachment(bytes: ByteArray, contentType: String?): String {

@@ -31,7 +31,7 @@ class SettingsStore(context: Context) {
     }
 
     fun put(namespace: String, patch: JsonObject) {
-        val merged = get(namespace) + patch
+        val merged = JsonObject(get(namespace) + patch)
         prefs.edit()
             .putString(key(namespace), json.encodeToString(JsonObject.serializer(), merged))
             .apply()
@@ -49,6 +49,12 @@ class SettingsStore(context: Context) {
         const val NS_GENERAL = "general"
         const val NS_SESSIONS = "sessions"
         const val NS_ADDONS = "addons"
+
+        /**
+         * The model profile (F-001): `baseUrl`, `apiKey`, `model`.
+         * Read by the provider add-on on every use — no restart needed.
+         */
+        const val NS_MODEL = "model"
     }
 }
 
