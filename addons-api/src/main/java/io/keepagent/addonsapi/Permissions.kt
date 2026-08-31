@@ -13,6 +13,10 @@ object Permissions {
     const val WORKSPACE_WRITE = "workspace:write"
     const val NETWORK = "network"
     const val DEVICE_SCREENSHOT = "device:screenshot"
+    // Test-target permissions (spec §3.1, §10): each maps to a system flow.
+    const val DEVICE_UIAUTOMATION = "device:uiautomation" // AccessibilityService + intent launch
+    const val PACKAGE_INSTALL = "package:install" // via the system installer UI, never silent
+    const val PROCESS_SPAWN = "process:spawn" // subprocess execution under the exec approval class
 
     val ALL: Set<String> = setOf(
         LOG,
@@ -22,5 +26,8 @@ object Permissions {
         WORKSPACE_WRITE,
         NETWORK,
         DEVICE_SCREENSHOT,
+        DEVICE_UIAUTOMATION,
+        PACKAGE_INSTALL,
+        PROCESS_SPAWN,
     )
 }

@@ -11,7 +11,8 @@ object Capabilities {
     const val UI_PANEL = "ui.panel"
     const val CHAT_RENDERER = "chat.renderer"
     const val WORKSPACE_SOURCE = "workspace.source"
-    const val TEST_RUNNER = "test.runner"
+    const val TEST_RUNNER = "test.runner" // target kinds: web, desktop, android, custom (spec §3.1)
+    const val DEV_TOOLCHAIN = "dev.toolchain" // language/toolchain registration for the run tool (spec §8.1)
     const val CONSOLE_COMMAND = "console.command"
     const val CONNECTION = "connection"
     const val NOTIFICATION = "notification"
@@ -24,6 +25,7 @@ object Capabilities {
         CHAT_RENDERER,
         WORKSPACE_SOURCE,
         TEST_RUNNER,
+        DEV_TOOLCHAIN,
         CONSOLE_COMMAND,
         CONNECTION,
         NOTIFICATION,

@@ -2,14 +2,19 @@
 
 A modular AI agentic development app for Android. A thin core runtime + a
 versioned Addon API; add-ons are the product, the host is small enough to
-audit. Design doc: [`../DEV_SPEC.md`](../DEV_SPEC.md) · Feature backlog:
-[`../FEATURES.md`](../FEATURES.md) · Addon guide: [`docs/ADDON_API.md`](docs/ADDON_API.md).
+audit. Ambition: desktop-agent parity (opencode / Claude Code class) on any
+phone — the on-device dev loop, with three test targets (web, desktop,
+Android) and a remote runner (ADR-0003). Design doc:
+[`../DEV_SPEC.md`](../DEV_SPEC.md) · Feature backlog:
+[`../FEATURES.md`](../FEATURES.md) · Addon guide:
+[`docs/ADDON_API.md`](docs/ADDON_API.md).
 
 > **Status: M0 scaffold.** The app shell (6 tabs, castle-keep visual theme,
 > stone top bar) is real Compose UI; the Tier-2 add-on loop (quickjs-ng
 > sandbox → manifest validation → tool registration → tool invocation) is
-> implemented and wired to the UI. LLM chat, workspaces, and the test runner
-> land in M1–M3. See [What's in M0](#whats-in-m0).
+> implemented and wired to the UI. LLM chat, workspaces, the on-device
+> toolchain, and the three test targets (web / desktop / Android) land in
+> M1–M3. See [What's in M0](#whats-in-m0).
 
 ## Prerequisites (to build)
 
@@ -106,5 +111,8 @@ quickjs.c`); `quickjs-libc.c` and the CLI tools are **not** included.
 - No LLM provider yet — Chat shows a static mockup sample (M1, F-001/F-004).
 - Tool handlers are synchronous in M0; `await` in a handler hangs (M1).
 - No file/network I/O in the sandbox yet (M1 host calls behind permissions).
+- No process service or toolchains yet (M2, F-016) and no test targets yet —
+  web (WebView), desktop profile, and native Android are M2 (F-006/F-013/
+  F-015); the remote desktop runner is M3 (F-018).
 - Tier-1 and Tier-3 runtimes are stubs (M1–M3).
 - UI polish: the full keep-themed pass (F-014) is M2.

@@ -49,18 +49,38 @@ Validation is a hard gate: an invalid manifest never initializes (spec §5.4).
 ## Permissions (known names, M0)
 
 `log` · `settings:read` · `settings:write` · `workspace:read` ·
-`workspace:write` · `network` · `device:screenshot`
+`workspace:write` · `network` · `device:screenshot` ·
+`device:uiautomation` · `package:install` · `process:spawn`
 
-The host grants nothing beyond what a valid manifest declares.
+The host grants nothing beyond what a valid manifest declares. The three
+target permissions map to system flows (spec §3.1, §10): `device:screenshot`
+→ MediaProjection, `device:uiautomation` → AccessibilityService + intent
+launch, `package:install` → system installer UI (never silent),
+`process:spawn` → subprocess execution under the `exec` approval class.
 
 ## Capabilities (known ids)
 
 `tool` · `llm.provider` · `ui.panel` · `chat.renderer` · `workspace.source` ·
-`test.runner` · `console.command` · `connection` · `notification` ·
-`settings.schema`
+`test.runner` · `dev.toolchain` · `console.command` · `connection` ·
+`notification` · `settings.schema`
 
 M0 implements registration for `tool`; the others slot in as their
 milestones land.
+
+## Test targets (`test.runner`, M2+)
+
+A `test.runner` registration declares the target kinds it supports
+(`web`, `desktop`, `android`, custom) and provides the observation contract
+(spec §3.1): a screenshot stream, an event stream (console/logs), input
+control (click/type/navigate), and structured capture (DOM, UI tree). Every
+target event flows through the host event stream, so sessions are replayable
+in the Console.
+
+## Toolchains (`dev.toolchain`, M2+)
+
+A toolchain add-on registers a language/runtime (id, version probe, binary
+source, environment requirements) that the `run` tool and the build loop can
+use (spec §8.1). First ships: esbuild, Node.js, git (native arm64 binaries).
 
 ## The `ka` host API (Tier-2)
 
