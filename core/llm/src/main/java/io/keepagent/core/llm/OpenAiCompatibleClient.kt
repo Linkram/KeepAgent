@@ -44,23 +44,30 @@ class OpenAiCompatibleClient(
     override suspend fun listModels(): List<LlmModel> {
         if (knownModels.isNotEmpty()) return knownModels
         return try {
-            val url = rootUrl() + "/models"
-            val req = Request.Builder().url(url).get().auth().build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use emptyList()
-                val body = resp.body?.string().orEmpty()
-                val root = json.parseToJsonElement(body).jsonObject
-                val data = root["data"]?.jsonArray ?: return@use emptyList()
-                data.mapNotNull { el ->
-                    val obj = el as? JsonObject ?: return@mapNotNull null
-                    val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                    LlmModel(id = id, name = id, acceptsImages = id.contains("vision", ignoreCase = true))
-                }
-            }
-        } catch (_: IOException) {
-            emptyList()
+            fetchModels()
         } catch (_: Exception) {
             emptyList()
+        }
+    }
+
+    /**
+     * `GET /models` without swallowing errors — the connection-test path.
+     * Throws [IOException] on network failure or a non-2xx response
+     * (`"HTTP 401"`), so callers can surface the real problem.
+     */
+    suspend fun fetchModels(): List<LlmModel> {
+        val url = rootUrl() + "/models"
+        val req = Request.Builder().url(url).get().auth().build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+            val body = resp.body?.string().orEmpty()
+            val root = json.parseToJsonElement(body).jsonObject
+            val data = root["data"]?.jsonArray ?: return emptyList()
+            return data.mapNotNull { el ->
+                val obj = el as? JsonObject ?: return@mapNotNull null
+                val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                LlmModel(id = id, name = id, acceptsImages = id.contains("vision", ignoreCase = true))
+            }
         }
     }
 

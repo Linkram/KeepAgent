@@ -88,7 +88,14 @@ Settings keys (namespaced JSON in `SettingsStore`):
   OpenRouter, a local server, or any custom base URL. Add/edit/delete, and
   set the active one: its `baseUrl` / `apiKey` / `model` mirror into the
   `model` profile that the provider and the chat model chip read, so
-  switching connections changes the model without a restart.
+  switching connections changes the model without a restart. **Test**
+  (on each row and in the add/edit dialog) hits `GET /models` and reports
+  `OK — N models` or the real error (`HTTP 401`, host failure, …). The
+  chat model dropdown lists the fetched models and offers **Retry fetch**
+  when the fetch failed. The app holds `INTERNET` (and cleartext traffic
+  for local endpoints); targetSdk 35's edge-to-edge is handled with
+  `imePadding()`/`navigationBarsPadding()` so the keyboard only compresses
+  the chat area.
 - **LLM provider (F-001)**: `core/llm` — an OpenAI-compatible SSE client
   (streaming deltas, tool calls, `reasoning_content` thinking, final usage)
   wrapped by the Tier-1 `provider-openai` add-on. The provider re-reads the

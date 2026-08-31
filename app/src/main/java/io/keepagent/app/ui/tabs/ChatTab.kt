@@ -98,6 +98,7 @@ fun ChatTab() {
                 app.settingsStore.setString(SettingsStore.NS_MODEL, "model", id)
                 app.connections.syncActiveFromProfile()
             },
+            onRetryModels = { controller.refreshModels(force = true) },
             onConfigure = { showConfig = true },
             approvalMode = ApprovalMode.from(
                 app.settingsStore.getString(SettingsStore.NS_GENERAL, "approvalMode"),
@@ -190,6 +191,7 @@ private fun ChatHeader(
     models: List<io.keepagent.addonsapi.llm.LlmModel>,
     modelsError: String?,
     onModelSelected: (String) -> Unit,
+    onRetryModels: () -> Unit,
     onConfigure: () -> Unit,
     approvalMode: ApprovalMode,
     onApprovalMode: (ApprovalMode) -> Unit,
@@ -204,7 +206,7 @@ private fun ChatHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        ModelChip(modelLabel, models, modelsError, onModelSelected)
+        ModelChip(modelLabel, models, modelsError, onModelSelected, onRetryModels)
         ModeChip(
             label = "approval: ${approvalMode.name.lowercase().replace('_', '-')}",
             options = ApprovalMode.entries.map { it.name.lowercase().replace('_', '-') },
@@ -241,6 +243,7 @@ private fun ModelChip(
     models: List<io.keepagent.addonsapi.llm.LlmModel>,
     modelsError: String?,
     onModelSelected: (String) -> Unit,
+    onRetry: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
     Box {
@@ -253,6 +256,15 @@ private fun ModelChip(
                     },
                     onClick = {},
                 )
+                if (modelsError != null) {
+                    DropdownMenuItem(
+                        text = { Text("Retry fetch", fontSize = 12.sp) },
+                        onClick = {
+                            onRetry()
+                            open = false
+                        },
+                    )
+                }
             }
             models.forEach { m ->
                 DropdownMenuItem(

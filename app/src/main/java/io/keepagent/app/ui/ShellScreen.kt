@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -66,9 +68,16 @@ fun KeepAgentShell() {
     val app = Holder.app
     var selected by remember { mutableIntStateOf(0) }
 
+    // targetSdk 35 forces edge-to-edge: the app paints under the system bars
+    // and the keyboard, so the bottom insets are applied here. imePadding
+    // keeps the header/tiles fixed when the keyboard opens — only the content
+    // above the input bar compresses; navigationBarsPadding keeps the input
+    // bar above the three nav buttons.
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
+            .navigationBarsPadding()
             .background(WallBase),
     ) {
         // Top bar — header row, then the 6 tab tiles (clears the status bar).

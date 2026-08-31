@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +48,11 @@ import io.keepagent.app.ui.theme.LinkRead
 import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
 import io.keepagent.app.ui.theme.TileStone
+import io.keepagent.app.ui.theme.UserBubble
+import io.keepagent.core.llm.OpenAiCompatibleClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Connections tab (M1.1): named OpenAI-compatible API connections —
@@ -61,10 +67,20 @@ fun ConnectionsTab() {
     var activeId by remember { mutableStateOf(store.activeId()) }
     var creating by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ApiConnection?>(null) }
+    var testResults by remember { mutableStateOf(emptyMap<String, String>()) }
+    val scope = rememberCoroutineScope()
 
     fun refresh() {
         list = store.list()
         activeId = store.activeId()
+    }
+
+    fun runTest(key: String, baseUrl: String, apiKey: String) {
+        if (baseUrl.isBlank()) return
+        testResults = testResults + (key to "testing…")
+        scope.launch {
+            testResults = testResults + (key to probeEndpoint(baseUrl, apiKey))
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -126,7 +142,9 @@ fun ConnectionsTab() {
                     ConnectionRow(
                         conn = conn,
                         isActive = conn.id == activeId,
+                        testResult = testResults[conn.id],
                         onEdit = { editing = conn },
+                        onTest = { runTest(conn.id, conn.baseUrl, conn.apiKey) },
                         onSetActive = {
                             store.setActive(conn.id)
                             refresh()
@@ -180,7 +198,9 @@ fun ConnectionsTab() {
 private fun ConnectionRow(
     conn: ApiConnection,
     isActive: Boolean,
+    testResult: String?,
     onEdit: () -> Unit,
+    onTest: () -> Unit,
     onSetActive: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -245,11 +265,24 @@ private fun ConnectionRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (testResult != null) {
+                Text(
+                    text = testResult,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (testResult.startsWith("OK")) UserBubble else LinkRead,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         if (!isActive) {
             TextButton(onClick = onSetActive) {
                 Text("Set active", fontSize = 11.sp)
             }
+        }
+        TextButton(onClick = onTest) {
+            Text("Test", fontSize = 11.sp)
         }
         IconButton(onClick = onDelete) {
             Icon(
@@ -275,6 +308,8 @@ private fun ConnectionDialog(
     var baseUrl by remember { mutableStateOf(existing?.baseUrl ?: "") }
     var apiKey by remember { mutableStateOf(existing?.apiKey ?: "") }
     var model by remember { mutableStateOf(existing?.model ?: "") }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     val canSave = name.isNotBlank() && baseUrl.isNotBlank()
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -301,6 +336,29 @@ private fun ConnectionDialog(
                     }) {
                         Text("Local", fontSize = 11.sp)
                     }
+                    TextButton(
+                        onClick = {
+                            val b = baseUrl.trim()
+                            val k = apiKey.trim()
+                            testResult = "testing…"
+                            scope.launch {
+                                testResult = probeEndpoint(b, k)
+                            }
+                        },
+                        enabled = baseUrl.isNotBlank(),
+                    ) {
+                        Text("Test", fontSize = 11.sp)
+                    }
+                }
+                val tr = testResult
+                if (tr != null) {
+                    Text(
+                        text = tr,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (tr.startsWith("OK")) UserBubble else LinkRead,
+                        maxLines = 3,
+                    )
                 }
                 TextField(
                     value = baseUrl,
@@ -349,4 +407,25 @@ private fun ConnectionDialog(
             }
         },
     )
+}
+
+/**
+ * Connection probe: `GET /models` against the given endpoint with the given
+ * key, without touching the model profile. Returns a short human-readable
+ * result string ("OK — N models" or "failed: …").
+ */
+private suspend fun probeEndpoint(baseUrl: String, apiKey: String): String {
+    val client = OpenAiCompatibleClient(baseUrl, apiKey)
+    return try {
+        withContext(Dispatchers.IO) {
+            runCatching { client.fetchModels() }
+                .map { "OK — ${it.size} models" }
+                .getOrElse { "failed: ${it.message ?: it.javaClass.simpleName}" }
+        }
+    } finally {
+        try {
+            client.close()
+        } catch (_: Exception) {
+        }
+    }
 }
