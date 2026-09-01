@@ -10,6 +10,7 @@ enum class AddonStatus {
     INITIALIZED,
     FAILED,
     UNAVAILABLE,
+    DISABLED,
 }
 
 /** A discovered add-on and its current state (spec §5.4). */

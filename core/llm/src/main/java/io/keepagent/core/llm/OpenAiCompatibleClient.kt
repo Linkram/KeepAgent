@@ -1,7 +1,10 @@
 package io.keepagent.core.llm
 
 import io.keepagent.addonsapi.llm.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -15,11 +18,15 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.putJsonArray
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.IOException
+import java.util.SortedMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -55,12 +62,13 @@ class OpenAiCompatibleClient(
      * Throws [IOException] on network failure or a non-2xx response
      * (`"HTTP 401"`), so callers can surface the real problem.
      */
-    suspend fun fetchModels(): List<LlmModel> {
+    suspend fun fetchModels(): List<LlmModel> = withContext(Dispatchers.IO) {
         val url = rootUrl() + "/models"
         val req = Request.Builder().url(url).get().auth().build()
-        client.newCall(req).execute().use { resp ->
-            val body = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}" + snippet(body))
+        val resp = client.newCall(req).execute()
+        resp.use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code}" + snippet(body))
             val root = try {
                 json.parseToJsonElement(body).jsonObject
             } catch (e: Exception) {
@@ -68,81 +76,144 @@ class OpenAiCompatibleClient(
                 // gateway error text, …) instead of a raw parser message.
                 throw IOException("non-JSON response at /models" + snippet(body))
             }
-            val data = root["data"]?.jsonArray ?: return emptyList()
-            return data.mapNotNull { el ->
-                val obj = el as? JsonObject ?: return@mapNotNull null
-                val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                LlmModel(id = id, name = id, acceptsImages = id.contains("vision", ignoreCase = true))
+            val data = root["data"]?.jsonArray
+            if (data == null) {
+                emptyList()
+            } else {
+                data.mapNotNull { el ->
+                    val obj = el as? JsonObject ?: return@mapNotNull null
+                    val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    LlmModel(id = id, name = id, acceptsImages = id.contains("vision", ignoreCase = true))
+                }
             }
         }
     }
 
+    /**
+     * Streams a chat completion. Implemented as an asynchronous OkHttp call
+     * whose SSE events are pushed into a channel and consumed in the caller's
+     * coroutine context — so cancelling the caller's coroutine (user stop)
+     * cancels the HTTP call as well, instead of waiting it out.
+     */
     override suspend fun streamChat(
         request: LlmRequest,
         onEvent: suspend (LlmEvent) -> Unit,
-    ): LlmResult = withContext(Dispatchers.IO) {
+    ): LlmResult {
         val state = State()
         val text = StringBuilder()
         val thinking = StringBuilder()
         // index -> [id, name, arguments]
         val toolCalls = sortedMapOf<Int, MutableList<String>>()
 
-        try {
-            val url = rootUrl() + "/chat/completions"
-            val body = buildBody(request)
-            val req = Request.Builder()
-                .url(url)
-                .post(body.toString().toRequestBody(jsonMediaType))
-                .header("Accept", "text/event-stream")
-                .auth()
-                .build()
+        val call = client.newCall(buildChatRequest(request))
+        val events = Channel<LlmEvent>(Channel.UNLIMITED)
+        val done = CompletableDeferred<LlmResult>()
 
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
-                    throw LlmException(
-                        "LLM HTTP ${resp.code}: ${errBody.take(500)}",
-                        httpStatus = resp.code,
-                    )
-                }
-                val source = resp.body?.source() ?: throw LlmException("Empty LLM response body")
-                while (!source.exhausted()) {
-                    val line = source.readUtf8Line() ?: break
-                    if (line.isEmpty() || !line.startsWith("data:")) continue
-                    val payload = line.removePrefix("data:").trim()
-                    if (payload == "[DONE]") break
-                    if (payload.isEmpty()) continue
-                    handleChunk(
-                        chunk = json.parseToJsonElement(payload).jsonObject,
-                        onEvent = onEvent,
-                        text = text,
-                        thinking = thinking,
-                        toolCalls = toolCalls,
-                        state = state,
-                    )
+        call.enqueue(object : Callback {
+            override fun onFailure(c: Call, e: IOException) {
+                val cause = if (c.isCanceled()) CancellationException("LLM stream canceled")
+                else LlmException("LLM network error: ${e.message}", cause = e)
+                events.close(cause)
+                done.completeExceptionally(cause)
+            }
+
+            override fun onResponse(c: Call, response: Response) {
+                try {
+                    response.use { resp ->
+                        if (!resp.isSuccessful) {
+                            val errBody = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+                            val err = LlmException("LLM HTTP ${resp.code}: ${errBody.take(500)}", httpStatus = resp.code)
+                            events.close(err)
+                            done.completeExceptionally(err)
+                            return
+                        }
+                        val source = resp.body?.source() ?: run {
+                            val err = LlmException("Empty LLM response body")
+                            events.close(err)
+                            done.completeExceptionally(err)
+                            return
+                        }
+                        while (!source.exhausted()) {
+                            if (call.isCanceled()) break
+                            val line = source.readUtf8Line() ?: break
+                            if (line.isEmpty() || !line.startsWith("data:")) continue
+                            val payload = line.removePrefix("data:").trim()
+                            if (payload == "[DONE]") break
+                            if (payload.isEmpty()) continue
+                            val chunk = try {
+                                json.parseToJsonElement(payload).jsonObject
+                            } catch (e: Exception) {
+                                val err = LlmException("bad SSE payload: ${e.message}")
+                                events.close(err)
+                                done.completeExceptionally(err)
+                                return
+                            }
+                            handleChunk(
+                                chunk = chunk,
+                                onEvent = { ev -> events.trySend(ev) },
+                                text = text,
+                                thinking = thinking,
+                                toolCalls = toolCalls,
+                                state = state,
+                            )
+                        }
+                        val result = buildResult(text, thinking, toolCalls, state)
+                        done.complete(result)
+                        events.close()
+                    }
+                } catch (e: LlmException) {
+                    events.close(e)
+                    done.completeExceptionally(e)
+                } catch (e: CancellationException) {
+                    events.close(e)
+                    done.completeExceptionally(e)
+                } catch (e: IOException) {
+                    val err = LlmException("LLM network error: ${e.message}", cause = e)
+                    events.close(err)
+                    done.completeExceptionally(err)
+                } catch (e: Exception) {
+                    val err = LlmException("LLM error: ${e.message}", cause = e)
+                    events.close(err)
+                    done.completeExceptionally(err)
                 }
             }
-        } catch (e: LlmException) {
-            throw e
-        } catch (e: IOException) {
-            throw LlmException("LLM network error: ${e.message}", cause = e)
-        }
+        })
 
-        val calls = toolCalls.map { (idx, parts) ->
+        try {
+            // Consumed in the caller's context: a stop request reaches receive()
+            // and cancels the turn immediately.
+            for (ev in events) onEvent(ev)
+            return done.await()
+        } finally {
+            call.cancel()
+        }
+    }
+
+    private fun buildChatRequest(request: LlmRequest): Request = Request.Builder()
+        .url(rootUrl() + "/chat/completions")
+        .post(buildBody(request).toString().toRequestBody(jsonMediaType))
+        .header("Accept", "text/event-stream")
+        .auth()
+        .build()
+
+    private fun buildResult(
+        text: StringBuilder,
+        thinking: StringBuilder,
+        toolCalls: SortedMap<Int, MutableList<String>>,
+        state: State,
+    ): LlmResult = LlmResult(
+        text = text.toString(),
+        thinking = thinking.toString(),
+        toolCalls = toolCalls.map { (idx, parts) ->
             ToolCall(
                 id = parts[0].ifEmpty { "call_$idx" },
                 name = parts[1],
                 argumentsJson = parts[2].ifEmpty { "{}" },
             )
-        }
-        LlmResult(
-            text = text.toString(),
-            thinking = thinking.toString(),
-            toolCalls = calls,
-            usage = state.usage,
-            finishReason = state.finishReason,
-        )
-    }
+        },
+        usage = state.usage,
+        finishReason = state.finishReason,
+    )
 
     override suspend fun close() {
         client.dispatcher.executorService.shutdown()
@@ -245,9 +316,9 @@ class OpenAiCompatibleClient(
         }
     }
 
-    private suspend fun handleChunk(
+    private fun handleChunk(
         chunk: JsonObject,
-        onEvent: suspend (LlmEvent) -> Unit,
+        onEvent: (LlmEvent) -> Unit,
         text: StringBuilder,
         thinking: StringBuilder,
         toolCalls: MutableMap<Int, MutableList<String>>,

@@ -26,4 +26,5 @@ dependencies {
     api(project(":core:host"))
     api(project(":core:llm"))
     api(project(":core:settings"))
+    api(project(":core:events"))
 }

@@ -65,6 +65,23 @@ class WorkspaceManager(
         return sanitized
     }
 
+    /** Renames a workspace (and its persisted active pointer). Returns the new name, or null. */
+    fun rename(oldName: String, newName: String): String? {
+        val sanitized = newName.replace(Regex("[^a-zA-Z0-9-]"), "-").trim('-')
+        if (sanitized.isEmpty() || sanitized.length > 40) return null
+        if (sanitized == oldName) return oldName
+        val oldDir = File(root, oldName)
+        val newDir = File(root, sanitized)
+        if (!oldDir.isDirectory || newDir.exists()) return null
+        if (!oldDir.renameTo(newDir)) return null
+        if (activeName() == oldName) {
+            settings.setString(SettingsStore.NS_SESSIONS, ACTIVE_KEY, sanitized)
+            eventBus.emit(EventKind.SYSTEM, "workspaces", "active workspace renamed -> $sanitized")
+        }
+        eventBus.emit(EventKind.SYSTEM, "workspaces", "renamed workspace '$oldName' -> '$sanitized'")
+        return sanitized
+    }
+
     /** Deletes a workspace (never the active one). Returns true on success. */
     fun delete(name: String): Boolean {
         if (name == activeName()) return false

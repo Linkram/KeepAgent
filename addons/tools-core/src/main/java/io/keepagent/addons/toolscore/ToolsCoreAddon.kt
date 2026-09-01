@@ -16,6 +16,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 /**
  * The built-in file tools (F-007): read, write, edit, glob, grep.
@@ -58,7 +59,12 @@ class ToolsCoreAddon(private val fileService: FileService) : Tier1Addon {
             ),
         ) { argsJson ->
             withArgs(argsJson) { a ->
-                fileService.write(a.requireString("path"), a.requireString("content")).toResult()
+                val path = a.requireString("path")
+                val content = a.requireString("content")
+                // Capture the old content so the UI can show a diff.
+                val old = runCatching { fileService.read(path) }.getOrNull()?.takeIf { it.ok }?.text
+                val r = fileService.write(path, content)
+                if (r.ok) r.toResult(diffExtra(path, old, content)) else r.toResult()
             }
         }
 
@@ -71,12 +77,21 @@ class ToolsCoreAddon(private val fileService: FileService) : Tier1Addon {
             ),
         ) { argsJson ->
             withArgs(argsJson) { a ->
-                fileService.edit(
-                    path = a.requireString("path"),
+                val path = a.requireString("path")
+                // Capture the old content so the UI can show a diff.
+                val old = runCatching { fileService.read(path) }.getOrNull()?.takeIf { it.ok }?.text
+                val r = fileService.edit(
+                    path = path,
                     oldString = a.requireString("oldString"),
                     newString = a.optString("newString"),
                     replaceAll = a.optBoolean("replaceAll"),
-                ).toResult()
+                )
+                if (r.ok) {
+                    val new = runCatching { fileService.read(path) }.getOrNull()?.takeIf { it.ok }?.text
+                    r.toResult(diffExtra(path, old, new))
+                } else {
+                    r.toResult()
+                }
             }
         }
 
@@ -148,13 +163,28 @@ class ToolsCoreAddon(private val fileService: FileService) : Tier1Addon {
             result(false, e.message ?: "tool failed")
         }
 
-    private fun FileService.Result.toResult(): String =
-        if (ok) result(true, text) else result(false, error ?: "failed")
+    private fun FileService.Result.toResult(extra: Map<String, String> = emptyMap()): String =
+        if (ok) result(true, text, extra) else result(false, error ?: "failed")
+
+    /** File contents for the UI diff view (each side capped; flagged when truncated). */
+    private fun diffExtra(path: String, old: String?, new: String?): Map<String, String> = buildMap {
+        put("path", path)
+        put("old", old?.take(DIFF_CAP).orEmpty())
+        put("new", new?.take(DIFF_CAP).orEmpty())
+        if ((old?.length ?: 0) > DIFF_CAP || (new?.length ?: 0) > DIFF_CAP) put("truncated", "true")
+    }
 
     /** The JSON contract between tool handlers and the agent loop. */
-    private fun result(ok: Boolean, text: String): String =
+    private fun result(ok: Boolean, text: String, extra: Map<String, String> = emptyMap()): String =
         buildJsonObject {
             put("ok", ok)
             put("text", text)
+            if (extra.isNotEmpty()) {
+                putJsonObject("extra") { for ((k, v) in extra) put(k, v) }
+            }
         }.toString()
+
+    companion object {
+        const val DIFF_CAP = 64_000
+    }
 }

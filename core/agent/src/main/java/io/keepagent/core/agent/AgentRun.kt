@@ -13,6 +13,8 @@ data class ToolLine(
     val summary: String,
     val status: Status,
     val detail: String? = null,
+    /** Structured extras for the UI (diff old/new content, file path, …). */
+    val extra: Map<String, String> = emptyMap(),
 ) {
     enum class Status { RUNNING, OK, ERROR, DENIED }
 }
@@ -23,7 +25,7 @@ data class ToolLine(
  */
 class AgentRun {
 
-    enum class Status { RUNNING, DONE, ERROR }
+    enum class Status { RUNNING, DONE, CANCELED, ERROR }
 
     val id: String = "run-${System.currentTimeMillis()}"
     val createdAtMillis: Long = System.currentTimeMillis()
@@ -81,6 +83,11 @@ class AgentRun {
 
     fun complete() {
         _status.value = Status.DONE
+    }
+
+    /** The user stopped the turn (stop button / notification action). */
+    fun cancel() {
+        _status.value = Status.CANCELED
     }
 
     fun fail(message: String) {

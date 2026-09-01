@@ -111,7 +111,7 @@ class KeepAgentApp : Application() {
                 }
             },
             tier1Addons = listOf(
-                ProviderOpenAiAddon(settingsStore),
+                ProviderOpenAiAddon(settingsStore, eventBus),
                 ToolsCoreAddon(fileService),
             ),
         )
@@ -212,7 +212,12 @@ class RegistryToolExecutor(private val manager: AddonManager) : ToolExecutor {
                 val text = obj["text"]?.jsonPrimitive?.contentOrNull
                     ?: obj["error"]?.jsonPrimitive?.contentOrNull
                     ?: raw
-                ToolOutcome(ok, text)
+                val extra = obj["extra"]?.let { e ->
+                    (e as? kotlinx.serialization.json.JsonObject)
+                        ?.mapValues { it.value.jsonPrimitive.contentOrNull ?: it.value.toString() }
+                        ?: emptyMap()
+                } ?: emptyMap()
+                ToolOutcome(ok, text, extra)
             } catch (_: Exception) {
                 ToolOutcome(false, raw)
             }

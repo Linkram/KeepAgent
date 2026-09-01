@@ -38,6 +38,22 @@ class AddonManager(
     private val records = linkedMapOf<String, AddonRecord>()
     private val runtimes = linkedMapOf<String, AddonRuntime>()
 
+    /** Workspace root captured at [start], reused by runtime (re)initialization. */
+    @Volatile
+    private var workspacePath = ""
+
+    /** Add-on ids the user disabled (persisted, restored on next start). */
+    private fun disabledSet(): MutableSet<String> {
+        val raw = settings.getString(SettingsStore.NS_ADDONS, "disabled").orEmpty()
+        return raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+    }
+
+    private fun persistDisabled(id: String, disabled: Boolean) {
+        val set = disabledSet()
+        if (disabled) set.add(id) else set.remove(id)
+        settings.setString(SettingsStore.NS_ADDONS, "disabled", set.joinToString(","))
+    }
+
     private val _records = MutableStateFlow<List<AddonRecord>>(emptyList())
     /** Live view for the UI (Add-ons tab). */
     val recordsFlow: StateFlow<List<AddonRecord>> = _records.asStateFlow()
@@ -46,6 +62,7 @@ class AddonManager(
 
     /** Seeds samples, discovers, validates, and initializes. Run off the main thread. */
     fun start(workspacePath: String) {
+        this.workspacePath = workspacePath
         initializeTier1(workspacePath)
         val repository = AddonRepository(addonsDir)
         repository.seedFromAssets(context.assets)
@@ -69,9 +86,18 @@ class AddonManager(
             }
         }
         refreshRecords()
+        val disabled = disabledSet()
         records.values
             .filter { it.status == AddonStatus.VALID }
-            .forEach { enable(it, workspacePath) }
+            .forEach { record ->
+                if (record.id in disabled) {
+                    record.status = AddonStatus.DISABLED
+                    record.statusDetail = "disabled by user"
+                    eventBus.emit(EventKind.ADDON, "host", "add-on ${record.id} skipped (disabled by user)")
+                } else {
+                    enable(record, workspacePath)
+                }
+            }
         refreshRecords()
         eventBus.emit(
             EventKind.SYSTEM,
@@ -121,23 +147,79 @@ class AddonManager(
                 "host",
                 "built-in add-on ${manifest.id} v${manifest.version} discovered (tier 1, in-process)",
             )
-            record.status = AddonStatus.ENABLED
-            try {
-                addon.initialize(Tier1HostImpl(manifest, workspacePath))
-                record.status = AddonStatus.INITIALIZED
-                record.tools.addAll(
-                    registry.tools()
-                        .filter { it.addonId == manifest.id }
-                        .map { it.tool.name },
-                )
-                eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} initialized in-process")
-            } catch (e: Exception) {
-                record.status = AddonStatus.FAILED
-                record.statusDetail = e.message
-                eventBus.emit(EventKind.ERROR, "host", "add-on ${manifest.id} init failed: ${e.message}")
+            if (manifest.id in disabledSet()) {
+                record.status = AddonStatus.DISABLED
+                record.statusDetail = "disabled by user"
+                eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} skipped (disabled by user)")
+                refreshRecords()
+                return@forEach
             }
-            refreshRecords()
+            initTier1(addon, workspacePath, record)
         }
+    }
+
+    /** (Re)initializes one Tier-1 add-on into the registry. */
+    private fun initTier1(addon: Tier1Addon, wsPath: String, record: AddonRecord) {
+        val manifest = addon.manifest
+        record.status = AddonStatus.ENABLED
+        record.statusDetail = null
+        try {
+            addon.initialize(Tier1HostImpl(manifest, wsPath))
+            record.status = AddonStatus.INITIALIZED
+            record.tools.clear()
+            record.tools.addAll(
+                registry.tools()
+                    .filter { it.addonId == manifest.id }
+                    .map { it.tool.name },
+            )
+            eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} initialized in-process")
+        } catch (e: Exception) {
+            record.status = AddonStatus.FAILED
+            record.statusDetail = e.message
+            eventBus.emit(EventKind.ERROR, "host", "add-on ${manifest.id} init failed: ${e.message}")
+        }
+        refreshRecords()
+    }
+
+    /**
+     * User toggles an add-on on/off. Disabling removes its tools + provider
+     * from the registry (and shuts down its sandbox, if any); enabling
+     * re-runs initialization. The choice persists across app restarts.
+     */
+    fun setAddonEnabled(id: String, enabled: Boolean) {
+        val record = records.values.firstOrNull { it.id == id || it.dirName == id } ?: return
+        val manifest = record.manifest ?: return
+        if (record.status == AddonStatus.INVALID) return
+        if (!enabled) {
+            registry.unregisterAddon(manifest.id)
+            runtimes[record.dirName]?.let { runCatching { it.shutdown() } }
+            runtimes.remove(record.dirName)
+            record.tools.clear()
+            record.status = AddonStatus.DISABLED
+            record.statusDetail = "disabled by user"
+            persistDisabled(manifest.id, disabled = true)
+            eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} disabled by user")
+        } else {
+            persistDisabled(manifest.id, disabled = false)
+            when (manifest.tier) {
+                1 -> {
+                    val addon = tier1Addons.firstOrNull { it.manifest.id == manifest.id }
+                    if (addon == null) {
+                        record.status = AddonStatus.FAILED
+                        record.statusDetail = "built-in add-on instance not found"
+                    } else {
+                        initTier1(addon, workspacePath, record)
+                    }
+                }
+                2 -> enable(record, workspacePath)
+                else -> {
+                    record.status = AddonStatus.UNAVAILABLE
+                    record.statusDetail = "Tier ${manifest.tier} unavailable in M1 (external connections over loopback land in M3)"
+                }
+            }
+            eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} enabled by user")
+        }
+        refreshRecords()
     }
 
     private inner class Tier1HostImpl(

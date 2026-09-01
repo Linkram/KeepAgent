@@ -24,6 +24,11 @@ data class ToolSpec(
 data class ToolOutcome(
     val ok: Boolean,
     val text: String,
+    /**
+     * Structured side-channel for the UI (not shown to the model): e.g.
+     * `path`/`old`/`new` file contents so write/edit tools can render diffs.
+     */
+    val extra: Map<String, String> = emptyMap(),
 )
 
 /**

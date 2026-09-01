@@ -224,6 +224,7 @@ class FileService(
         val name: String,
         val isDirectory: Boolean,
         val sizeBytes: Long,
+        val lastModifiedMillis: Long = 0L,
     )
 
     /**
@@ -235,8 +236,62 @@ class FileService(
         if (!f.exists() || !f.isDirectory) return null
         return f.listFiles()
             ?.sortedWith(compareByDescending<File> { it.isDirectory }.thenBy { it.name.lowercase() })
-            ?.map { DirEntry(it.name, it.isDirectory, if (it.isDirectory) 0L else it.length()) }
+            ?.map { DirEntry(it.name, it.isDirectory, if (it.isDirectory) 0L else it.length(), it.lastModified()) }
             ?: emptyList()
+    }
+
+    /** Creates an empty file. Fails if the path already exists. */
+    fun createFile(path: String, content: String = ""): Result {
+        val f = resolve(path) ?: return Result.fail("outside workspace (file access = workspace)")
+        if (f.exists()) return Result.fail("already exists: $path")
+        return try {
+            f.parentFile?.mkdirs()
+            f.writeText(content)
+            Result.ok("created $path")
+        } catch (e: Exception) {
+            Result.fail("create failed: ${e.message}")
+        }
+    }
+
+    /** Creates a directory (parents as needed). Fails if the path already exists. */
+    fun createDir(path: String): Result {
+        val p = path.trimEnd('/')
+        if (p.isEmpty()) return Result.fail("no folder name given")
+        val f = resolve(p) ?: return Result.fail("outside workspace (file access = workspace)")
+        if (f.exists()) return Result.fail("already exists: $p")
+        return try {
+            f.mkdirs()
+            Result.ok("created folder $p")
+        } catch (e: Exception) {
+            Result.fail("create failed: ${e.message}")
+        }
+    }
+
+    /** Deletes a file or folder (recursively). Never deletes the workspace root. */
+    fun delete(path: String): Result {
+        val p = path.trimEnd('/')
+        if (p.isEmpty() || p == ".") return Result.fail("cannot delete the workspace root")
+        val f = resolve(p) ?: return Result.fail("outside workspace (file access = workspace)")
+        if (!f.exists()) return Result.fail("no such path: $p")
+        val ok = if (f.isDirectory) f.deleteRecursively() else f.delete()
+        return if (ok) Result.ok("deleted $p") else Result.fail("delete failed: $p")
+    }
+
+    /** Renames a file or folder within its own directory. Fails if the target exists. */
+    fun rename(oldPath: String, newName: String): Result {
+        val clean = newName.trim().trimEnd('/')
+        if (clean.isEmpty()) return Result.fail("no name given")
+        if (clean.contains('/') || clean == "." || clean == "..") return Result.fail("invalid name: $newName")
+        val f = resolve(oldPath) ?: return Result.fail("outside workspace (file access = workspace)")
+        if (!f.exists()) return Result.fail("no such path: $oldPath")
+        val target = File(f.parentFile, clean)
+        if (target.exists()) return Result.fail("already exists: $clean")
+        return try {
+            if (!f.renameTo(target)) return Result.fail("rename failed: $oldPath -> $clean")
+            Result.ok("renamed to $clean")
+        } catch (e: Exception) {
+            Result.fail("rename failed: ${e.message}")
+        }
     }
 
     /** Lists a directory (for the Workspaces tab browser). */

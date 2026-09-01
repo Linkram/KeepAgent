@@ -57,8 +57,23 @@ class ApprovalGate(
     @Volatile
     private var decision: CompletableDeferred<Boolean>? = null
 
+    /**
+     * Session memory: tools the user chose "always allow (this session)"
+     * for. In-memory only — cleared on app restart and when the user starts
+     * a new chat session (see [clearMemory]).
+     */
+    private val remembered = mutableSetOf<String>()
+
+    fun rememberedTools(): List<String> = synchronized(remembered) { remembered.toList() }
+
+    fun clearMemory() = synchronized(remembered) { remembered.clear() }
+
     suspend fun request(spec: ToolSpec, argsJson: String, summary: String): Boolean {
         if (spec.permission == ToolPermission.READ || spec.permission == ToolPermission.NETWORK) {
+            return true
+        }
+        if (synchronized(remembered) { spec.name.lowercase() in remembered }) {
+            eventBus.emit(EventKind.APPROVAL, "gate", "session memory: ${spec.name} allowed silently")
             return true
         }
         val mode = modeProvider()
@@ -99,8 +114,14 @@ class ApprovalGate(
         return allowed
     }
 
-    /** UI decision for the pending request. No-op when nothing is pending. */
-    fun decide(allow: Boolean) {
+    /**
+     * UI decision for the pending request. No-op when nothing is pending.
+     * [remember] = "always allow this tool for the rest of this session".
+     */
+    fun decide(allow: Boolean, remember: Boolean = false) {
+        if (allow && remember) {
+            synchronized(remembered) { remembered.add(pending.value?.toolName?.lowercase().orEmpty().ifEmpty { "?" }) }
+        }
         decision?.complete(allow)
     }
 

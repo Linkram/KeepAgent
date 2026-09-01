@@ -11,6 +11,8 @@ data class StoredTool(
     val summary: String,
     val status: String,
     val detail: String? = null,
+    /** UI extras (diff old/new content, file path). */
+    val extra: Map<String, String> = emptyMap(),
 )
 
 /** A workspace file or folder attached to a user message (path + preview). */
@@ -29,6 +31,15 @@ data class StoredTurn(
     val thinking: String = "",
     val tools: List<StoredTool> = emptyList(),
     val error: String? = null,
+    /** Model id used for this turn. */
+    val modelId: String? = null,
+    /** The exact prompt (user text + inlined attachments) sent to the model. */
+    val sentPrompt: String? = null,
+    val usagePrompt: Int = 0,
+    val usageCompletion: Int = 0,
+    val elapsedMs: Long = 0,
+    /** True when the user stopped the turn before it finished. */
+    val interrupted: Boolean = false,
 )
 
 /** A persisted chat session: one JSON file under files/keepagent/chats/. */
@@ -103,12 +114,23 @@ class ChatStore(rootDir: File) {
                 for (i in 0 until toolArr.length()) {
                     val jo = toolArr.getJSONObject(i)
                     val detail = jo.optString("detail")
+                    val extra = mutableMapOf<String, String>()
+                    val ex = jo.optJSONObject("extra")
+                    if (ex != null) {
+                        val keys = ex.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            val v = ex.optString(k)
+                            if (v.isNotEmpty() || ex.isNull(k).not()) extra[k] = v
+                        }
+                    }
                     tools.add(
                         StoredTool(
                             jo.optString("name"),
                             jo.optString("summary"),
                             jo.optString("status"),
                             detail.takeIf { d -> d.isNotEmpty() },
+                            extra,
                         ),
                     )
                 }
@@ -122,6 +144,12 @@ class ChatStore(rootDir: File) {
                     thinking = to.optString("thinking"),
                     error = if (to.isNull("error")) null else to.optString("error"),
                     tools = tools,
+                    modelId = to.optString("model").takeIf { m -> m.isNotEmpty() },
+                    sentPrompt = to.optString("sent").takeIf { s -> s.isNotEmpty() },
+                    usagePrompt = to.optInt("usagePrompt"),
+                    usageCompletion = to.optInt("usageCompletion"),
+                    elapsedMs = to.optLong("elapsedMs"),
+                    interrupted = to.optBoolean("interrupted"),
                 ),
             )
         }
@@ -157,6 +185,12 @@ class ChatStore(rootDir: File) {
             to.put("agent", t.agentText)
             to.put("thinking", t.thinking)
             to.put("error", t.error ?: JSONObject.NULL)
+            if (t.modelId != null) to.put("model", t.modelId)
+            if (t.sentPrompt != null) to.put("sent", t.sentPrompt)
+            if (t.usagePrompt > 0) to.put("usagePrompt", t.usagePrompt)
+            if (t.usageCompletion > 0) to.put("usageCompletion", t.usageCompletion)
+            if (t.elapsedMs > 0) to.put("elapsedMs", t.elapsedMs)
+            if (t.interrupted) to.put("interrupted", true)
             val tools = JSONArray()
             t.tools.forEach { tl ->
                 val jo = JSONObject()
@@ -164,6 +198,11 @@ class ChatStore(rootDir: File) {
                 jo.put("summary", tl.summary)
                 jo.put("status", tl.status)
                 if (tl.detail != null) jo.put("detail", tl.detail)
+                if (tl.extra.isNotEmpty()) {
+                    val ex = JSONObject()
+                    tl.extra.forEach { (k, v) -> ex.put(k, v) }
+                    jo.put("extra", ex)
+                }
                 tools.put(jo)
             }
             to.put("tools", tools)
