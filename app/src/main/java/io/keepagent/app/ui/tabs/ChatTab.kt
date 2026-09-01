@@ -93,6 +93,7 @@ fun ChatTab() {
         ChatHeader(
             modelLabel = modelId ?: "no model configured",
             models = models,
+            currentModel = modelId,
             modelsError = modelsError,
             onModelSelected = { id ->
                 app.settingsStore.setString(SettingsStore.NS_MODEL, "model", id)
@@ -189,6 +190,7 @@ fun ChatTab() {
 private fun ChatHeader(
     modelLabel: String,
     models: List<io.keepagent.addonsapi.llm.LlmModel>,
+    currentModel: String?,
     modelsError: String?,
     onModelSelected: (String) -> Unit,
     onRetryModels: () -> Unit,
@@ -206,7 +208,7 @@ private fun ChatHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        ModelChip(modelLabel, models, modelsError, onModelSelected, onRetryModels)
+        ModelChip(modelLabel, models, currentModel, modelsError, onModelSelected, onRetryModels)
         ModeChip(
             label = "approval: ${approvalMode.name.lowercase().replace('_', '-')}",
             options = ApprovalMode.entries.map { it.name.lowercase().replace('_', '-') },
@@ -241,6 +243,7 @@ private fun ChatHeader(
 private fun ModelChip(
     modelLabel: String,
     models: List<io.keepagent.addonsapi.llm.LlmModel>,
+    currentModel: String?,
     modelsError: String?,
     onModelSelected: (String) -> Unit,
     onRetry: () -> Unit,
@@ -266,7 +269,13 @@ private fun ModelChip(
                     )
                 }
             }
-            models.forEach { m ->
+            // The endpoint's full list; when it is empty (fetch failed or the
+            // endpoint has no /models), the configured model stays selectable.
+            val selectable = models.ifEmpty {
+                currentModel?.let { listOf(io.keepagent.addonsapi.llm.LlmModel(id = it, name = it)) }
+                    ?: emptyList()
+            }
+            selectable.forEach { m ->
                 DropdownMenuItem(
                     text = { Text(m.name, fontSize = 12.sp) },
                     onClick = {

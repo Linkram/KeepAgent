@@ -59,9 +59,15 @@ class OpenAiCompatibleClient(
         val url = rootUrl() + "/models"
         val req = Request.Builder().url(url).get().auth().build()
         client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
             val body = resp.body?.string().orEmpty()
-            val root = json.parseToJsonElement(body).jsonObject
+            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}" + snippet(body))
+            val root = try {
+                json.parseToJsonElement(body).jsonObject
+            } catch (e: Exception) {
+                // Surface what the endpoint actually sent (HTML login pages,
+                // gateway error text, …) instead of a raw parser message.
+                throw IOException("non-JSON response at /models" + snippet(body))
+            }
             val data = root["data"]?.jsonArray ?: return emptyList()
             return data.mapNotNull { el ->
                 val obj = el as? JsonObject ?: return@mapNotNull null
@@ -155,6 +161,12 @@ class OpenAiCompatibleClient(
 
     private fun Request.Builder.auth(): Request.Builder = apply {
         if (apiKey.isNotBlank()) header("Authorization", "Bearer $apiKey")
+    }
+
+    /** Whitespace-collapsed body prefix for error messages ("": …snippet"). */
+    private fun snippet(body: String): String {
+        val flat = body.replace(Regex("\\s+"), " ").trim()
+        return if (flat.isEmpty()) "" else ": ${flat.take(80)}"
     }
 
     private fun buildBody(req: LlmRequest): JsonObject = buildJsonObject {
