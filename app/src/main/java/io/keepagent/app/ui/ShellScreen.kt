@@ -27,10 +27,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlin.math.roundToInt
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,6 +69,7 @@ import io.keepagent.app.ui.theme.WallBase
 fun KeepAgentShell() {
     val app = Holder.app
     var selected by remember { mutableIntStateOf(0) }
+    val isRunning by app.chatController.isRunning.collectAsState()
 
     // targetSdk 35 forces edge-to-edge: the app paints under the system bars
     // and the keyboard, so the bottom insets are applied here. imePadding
@@ -98,6 +101,7 @@ fun KeepAgentShell() {
                         label = label,
                         iconRes = icon,
                         selected = index == selected,
+                        running = index == 0 && isRunning,
                         onClick = { selected = index },
                         modifier = Modifier.weight(1f),
                     )
@@ -110,7 +114,7 @@ fun KeepAgentShell() {
         Box(modifier = Modifier.fillMaxSize()) {
             CastleWallBackground(modifier = Modifier.fillMaxSize())
             when (selected) {
-                0 -> ChatTab()
+                0 -> ChatTab(onOpenFileInWorkspaces = { selected = 2 })
                 1 -> TestTab(onGotoChat = { selected = 0 })
                 2 -> WorkspacesTab()
                 3 -> ConsoleTab(app.eventBus)
@@ -163,17 +167,29 @@ private fun HeaderBar() {
                 color = TextSecondary,
             )
         }
+        val stats by app.chatController.stats.collectAsState()
+        val tps = if (stats.elapsedMs > 0) stats.completionTokens * 1000f / stats.elapsedMs else 0f
         Column(horizontalAlignment = Alignment.End) {
             Text("Avg. Speed", fontSize = 8.sp, color = TextSecondary)
-            Text("— t/s", fontSize = 10.sp, color = AmberStatus)
+            Text(
+                text = if (tps > 0) "${tps.roundToInt()} t/s" else "— t/s",
+                fontSize = 10.sp,
+                color = AmberStatus,
+            )
         }
         Spacer(modifier = Modifier.width(10.dp))
         Column(horizontalAlignment = Alignment.End) {
             Text("Context used", fontSize = 8.sp, color = TextSecondary)
-            Text("—/—", fontSize = 10.sp, color = AmberStatus)
+            Text(
+                text = if (stats.contextLimit > 0)
+                    "${stats.lastPromptTokens}/${stats.contextLimit}" else "—/—",
+                fontSize = 10.sp,
+                color = AmberStatus,
+                maxLines = 1,
+            )
         }
         Spacer(modifier = Modifier.width(8.dp))
-        ContextGauge(fraction = 0.5f)
+        ContextGauge(fraction = if (stats.contextLimit > 0) stats.lastPromptTokens / stats.contextLimit.toFloat() else 0f)
     }
 }
 
@@ -209,34 +225,51 @@ private fun TabTile(
     iconRes: Int,
     selected: Boolean,
     onClick: () -> Unit,
+    running: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(3.dp)
-    Column(
+    Box(
         modifier = modifier
             .fillMaxHeight()
             .clip(shape)
             .background(if (selected) TileStoneSelected else TileStone)
             .border(width = 1.dp, color = if (selected) BevelLight else Color.Transparent, shape = shape)
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .clickable(onClick = onClick),
     ) {
-        Icon(
-            painter = painterResource(iconRes),
-            contentDescription = null,
-            tint = if (selected) TextPrimary else TextSecondary,
-            modifier = Modifier.size(17.dp),
-        )
-        Spacer(modifier = Modifier.height(3.dp))
-        Text(
-            text = label,
-            fontSize = 10.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) TextPrimary else TextSecondary,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-        )
+        // Activity dot while the agent is mid-turn.
+        if (running) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(3.dp)
+                    .size(5.dp)
+                    .clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(AmberStatus),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 6.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = if (selected) TextPrimary else TextSecondary,
+                modifier = Modifier.size(17.dp),
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = label,
+                fontSize = 10.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) TextPrimary else TextSecondary,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+        }
     }
 }

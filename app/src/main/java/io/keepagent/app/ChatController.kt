@@ -1,5 +1,6 @@
 package io.keepagent.app
 
+import io.keepagent.addonsapi.llm.ChatMessage
 import io.keepagent.addonsapi.llm.ImagePart
 import io.keepagent.addonsapi.llm.LlmModel
 import io.keepagent.app.chat.ChatSession
@@ -10,12 +11,20 @@ import io.keepagent.app.chat.StoredTurn
 import io.keepagent.core.agent.AgentRun
 import io.keepagent.core.agent.ToolLine
 import io.keepagent.core.events.EventKind
+import io.keepagent.core.settings.SettingsStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -36,7 +45,21 @@ class ChatController(private val app: KeepAgentApp) {
         val images: List<ImagePart>,
         val run: AgentRun,
         val files: List<AttachedFile> = emptyList(),
+        val modelId: String? = null,
+        /** The exact prompt sent to the model (user text + inlined attachments). */
+        val sentPrompt: String = "",
     )
+
+    /** Aggregate stats for the header (speed + context usage). */
+    data class SessionStats(
+        val completionTokens: Int = 0,
+        val elapsedMs: Long = 0,
+        val lastPromptTokens: Int = 0,
+        val contextLimit: Int = 0,
+    )
+
+    private val _stats = MutableStateFlow(SessionStats())
+    val stats: StateFlow<SessionStats> = _stats.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val store = ChatStore(File(app.filesDir, "keepagent/chats"))
@@ -47,6 +70,11 @@ class ChatController(private val app: KeepAgentApp) {
     /** Title of the active session ("New chat" until first message or rename). */
     private val _sessionTitle = MutableStateFlow("New chat")
     val sessionTitle: StateFlow<String> = _sessionTitle.asStateFlow()
+
+    /** True while any turn is still streaming (drives the stop button + tab dot). */
+    val isRunning: StateFlow<Boolean> = _turns
+        .map { list -> list.any { it.run.isRunning } }
+        .stateIn(scope, SharingStarted.Eagerly, false)
 
     @Volatile
     private var _activeSessionId: String? = null
@@ -99,25 +127,184 @@ class ChatController(private val app: KeepAgentApp) {
     val busy: Boolean
         get() = _turns.value.lastOrNull()?.run?.isRunning == true
 
+    @Volatile
+    private var turnJob: Job? = null
+
     fun send(text: String) {
         val trimmed = text.trim()
         val images = _pendingImages.value
         val files = _pendingFiles.value
         if (trimmed.isEmpty() && images.isEmpty() && files.isEmpty()) return
         if (busy) return
+        // Pending attachments (screenshots, files, folders) ride this message.
+        _pendingImages.value = emptyList()
+        _pendingFiles.value = emptyList()
+        _draftText.value = ""
+        persistDraft()
+        dispatch(trimmed, images, files)
+    }
+
+    /** The actual turn launch; [dispatch] is also used by retry. */
+    private fun dispatch(text: String, images: List<ImagePart>, files: List<AttachedFile>) {
         val agent = app.createAgentLoop()
         if (agent == null) {
             app.eventBus.emit(EventKind.ERROR, "chat", "chat unavailable: model not configured (base URL + model)")
             return
         }
-        // Pending attachments (screenshots, files, folders) ride this message.
-        _pendingImages.value = emptyList()
-        _pendingFiles.value = emptyList()
-        val turn = Turn(trimmed, images, AgentRun(), files)
+        val prompt = buildPromptText(text, files)
+        val turn = Turn(
+            userText = text,
+            images = images,
+            run = AgentRun(),
+            files = files,
+            modelId = app.currentModelId(),
+            sentPrompt = prompt,
+        )
         _turns.value = _turns.value + turn
-        scope.launch(Dispatchers.Default) {
-            agent.runTurn(turn.run, buildPromptText(trimmed, files), images)
-            saveSession()
+        val history = buildHistory(excludeLast = true)
+        val system = buildSystemText()
+        turnJob = scope.launch(Dispatchers.Default) {
+            // Periodic save so a killed app keeps a partial turn.
+            val ticker = launch {
+                while (isActive && turn.run.isRunning) {
+                    delay(5_000)
+                    saveSession()
+                }
+            }
+            try {
+                agent.runTurn(turn.run, prompt, images, history = history, systemText = system)
+            } catch (e: CancellationException) {
+                // stop() — run is already CANCELED; fall through to save.
+            } finally {
+                ticker.cancel()
+                saveSession()
+                refreshStats()
+            }
+        }
+    }
+
+    /** Cancels the running turn (stop button / notification action). */
+    fun stop() {
+        turnJob?.cancel()
+    }
+
+    // ---- Per-turn actions (M1.4) ----
+
+    /** Re-sends the last turn (after an error or a stop). */
+    fun retryLast() {
+        if (busy) return
+        val last = _turns.value.lastOrNull() ?: return
+        _turns.value = _turns.value.dropLast(1)
+        dispatch(last.userText, last.images, last.files)
+    }
+
+    /** Loads the last user message back into the composer for editing. */
+    fun editLast() {
+        if (busy) return
+        val last = _turns.value.lastOrNull() ?: return
+        _turns.value = _turns.value.dropLast(1)
+        _draftText.value = last.userText
+        persistDraft()
+        saveSession()
+    }
+
+    /** Removes one turn (and everything after it) from the session. */
+    fun deleteTurn(index: Int) {
+        if (busy) return
+        val turns = _turns.value
+        if (index < 0 || index >= turns.size) return
+        _turns.value = turns.subList(0, index)
+        saveSession()
+    }
+
+    /** Starts a new session containing the turns up to (and including) [index]. */
+    fun forkFrom(index: Int) {
+        if (busy) return
+        val turns = _turns.value
+        if (index < 0 || index >= turns.size) return
+        scope.launch(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val id = ChatStore.newId()
+            val session = ChatSession(
+                id = id,
+                title = (_sessionTitle.value + " (fork)").take(60),
+                createdAt = now,
+                updatedAt = now,
+                turns = turns.subList(0, index + 1).map { snapshot(it) },
+            )
+            store.save(session)
+            loadIntoTurns(session)
+        }
+    }
+
+    /** Draft (unsent composer text), persisted so it survives an app kill. */
+    private val _draftText = MutableStateFlow(app.settingsStore.getString(SettingsStore.NS_SESSIONS, "draftText").orEmpty())
+    val draftText: StateFlow<String> = _draftText.asStateFlow()
+
+    fun setDraft(text: String) {
+        _draftText.value = text
+        persistDraftDebounced(text)
+    }
+
+    @Volatile
+    private var draftPersistJob: Job? = null
+
+    private fun persistDraftDebounced(text: String) {
+        draftPersistJob?.cancel()
+        draftPersistJob = scope.launch {
+            delay(800)
+            if (_draftText.value == text) persistDraft()
+        }
+    }
+
+    private fun persistDraft() {
+        app.settingsStore.setString(SettingsStore.NS_SESSIONS, "draftText", _draftText.value)
+    }
+
+    /** Recomputes header stats (tokens/second, last context size, limit). */
+    private fun refreshStats() {
+        val turns = _turns.value
+        var completion = 0
+        var elapsed = 0L
+        var lastPrompt = 0
+        for (t in turns) {
+            val u = t.run.usage
+            completion += u.completionTokens
+            elapsed += t.run.elapsedMs
+            lastPrompt = maxOf(lastPrompt, u.promptTokens)
+        }
+        // For settled turns, use the stored elapsed when available (loaded sessions).
+        val limit = app.settingsStore
+            .getString(SettingsStore.NS_MODEL, "contextLimit")?.toIntOrNull()?.coerceIn(1000, 2_000_000) ?: 128_000
+        _stats.value = SessionStats(completion, elapsed, lastPrompt, limit)
+    }
+
+    /**
+     * Prior turns flattened into user/assistant pairs so the model keeps
+     * context across the conversation.
+     */
+    private fun buildHistory(excludeLast: Boolean): List<ChatMessage> {
+        val src = _turns.value
+        val last = if (excludeLast) src.size - 1 else src.size
+        val out = mutableListOf<ChatMessage>()
+        for (i in 0 until minOf(last, src.size)) {
+            val t = src[i]
+            if (t.run.isRunning) continue
+            if (t.userText.isBlank() && t.images.isEmpty()) continue
+            out.add(ChatMessage.user(t.userText, t.images))
+            if (t.run.text.value.isNotBlank()) out.add(ChatMessage.assistant(t.run.text.value))
+        }
+        return out
+    }
+
+    /** Minimal functional system prompt (workspace + tool guidance, no persona). */
+    private fun buildSystemText(): String? {
+        val ws = runCatching { app.workspaceManager.activeName() }.getOrNull() ?: return null
+        return buildString {
+            append("You are an agent working inside the Android app KeepAgent. ")
+            append("Your workspace is \"").append(ws).append("\". ")
+            append("Use the provided tools (read, write, edit, glob, grep) for file work. ")
+            append("Write concise, direct answers.")
         }
     }
 
@@ -132,7 +319,8 @@ class ChatController(private val app: KeepAgentApp) {
         return sb.toString().trim().ifEmpty { text }
     }
 
-    fun decideApproval(allow: Boolean) = app.approvalGate.decide(allow)
+    fun decideApproval(allow: Boolean, remember: Boolean = false) =
+        app.approvalGate.decide(allow, remember)
 
     /** Loads the provider's model list; failures surface in [modelsError]. */
     fun refreshModels(force: Boolean = false) {
@@ -179,6 +367,7 @@ class ChatController(private val app: KeepAgentApp) {
         _activeSessionId = null
         _sessionTitle.value = "New chat"
         _turns.value = emptyList()
+        app.approvalGate.clearMemory() // "always allow (this session)" resets per conversation
     }
 
     fun renameSession(id: String, title: String) {
@@ -213,18 +402,30 @@ class ChatController(private val app: KeepAgentApp) {
                 val status = runCatching { ToolLine.Status.valueOf(t.status) }
                     .getOrDefault(ToolLine.Status.OK)
                 run.addToolLine(
-                    ToolLine(id = "hist-$i", name = t.name, summary = t.summary, status = status, detail = t.detail),
+                    ToolLine(
+                        id = "hist-$i",
+                        name = t.name,
+                        summary = t.summary,
+                        status = status,
+                        detail = t.detail,
+                        extra = t.extra,
+                    ),
                 )
             }
             val err = st.error
             if (err != null) run.fail(err) else run.complete()
+            run.addUsage(st.usagePrompt, st.usageCompletion)
+            if (st.elapsedMs > 0) run.finishedAtMillis = st.elapsedMs
             Turn(
                 userText = st.userText,
                 images = st.images,
                 run = run,
                 files = st.files.map { AttachedFile(it.path, it.isFolder, it.preview) },
+                modelId = st.modelId,
+                sentPrompt = st.sentPrompt.orEmpty(),
             )
         }
+        refreshStats()
     }
 
     /** Persists the active session (call after a turn settles). */
@@ -250,6 +451,7 @@ class ChatController(private val app: KeepAgentApp) {
 
     private fun snapshot(t: Turn): StoredTurn {
         val run = t.run
+        val u = run.usage
         return StoredTurn(
             userText = t.userText,
             images = t.images,
@@ -258,8 +460,14 @@ class ChatController(private val app: KeepAgentApp) {
             thinking = run.thinking.value,
             error = run.error.value,
             tools = run.toolLines.value.map {
-                StoredTool(it.name, it.summary, it.status.name, it.detail)
+                StoredTool(it.name, it.summary, it.status.name, it.detail, it.extra)
             },
+            modelId = t.modelId,
+            sentPrompt = t.sentPrompt.takeIf { it.isNotEmpty() },
+            usagePrompt = u.promptTokens,
+            usageCompletion = u.completionTokens,
+            elapsedMs = run.elapsedMs,
+            interrupted = run.status.value == AgentRun.Status.CANCELED,
         )
     }
 }

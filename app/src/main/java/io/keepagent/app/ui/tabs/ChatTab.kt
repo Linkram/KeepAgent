@@ -22,14 +22,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -39,6 +44,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -59,14 +66,22 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.addonsapi.llm.ImagePart
+import io.keepagent.app.ChatController
 import io.keepagent.app.ChatController.AttachedFile
 import io.keepagent.app.Holder
 import io.keepagent.app.R
 import io.keepagent.app.chat.ChatSession
+import io.keepagent.app.ui.common.Clip
+import io.keepagent.app.ui.common.DiffView
+import io.keepagent.app.ui.common.FileOpener
+import io.keepagent.app.ui.common.MarkdownText
 import io.keepagent.core.agent.AgentRun
 import io.keepagent.core.agent.ApprovalMode
 import io.keepagent.core.agent.ApprovalRequest
@@ -76,6 +91,7 @@ import io.keepagent.core.settings.FileAccess
 import io.keepagent.core.settings.SettingsStore
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
+import java.io.File
 import kotlin.math.max
 import io.keepagent.app.ui.theme.AgentBubble
 import io.keepagent.app.ui.theme.AmberStatus
@@ -97,24 +113,65 @@ import kotlinx.coroutines.withContext
  * profile editor. One active session; multi-session lands in M2.
  */
 @Composable
-fun ChatTab() {
+fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
     val app = Holder.app
     val controller = app.chatController
     val turns by controller.turns.collectAsState()
     val models by controller.models.collectAsState()
     val modelsError by controller.modelsError.collectAsState()
     val pendingApproval by app.approvalGate.pending.collectAsState()
+    val isRunning by controller.isRunning.collectAsState()
+    val sendOnEnter = remember {
+        app.settingsStore.getString(SettingsStore.NS_GENERAL, "sendOnEnter") == "true"
+    }
 
-    var input by remember { mutableStateOf("") }
+    // Draft (unsent text) is restored and persisted through the controller.
+    var input by remember { mutableStateOf(controller.draftText.value) }
+    LaunchedEffect(input) { controller.setDraft(input) }
     val pendingImages by controller.pendingImages.collectAsState()
     val pendingFiles by controller.pendingFiles.collectAsState()
     val sessionTitle by controller.sessionTitle.collectAsState()
 
     var showHistory by remember { mutableStateOf(false) }
     var showFilePicker by remember { mutableStateOf(false) }
+    var zoomImage by remember { mutableStateOf<ImagePart?>(null) }
+    val snack = remember { SnackbarHostState() }
 
     val context = LocalContext.current
     val cScope = rememberCoroutineScope()
+
+    fun copyText(text: String) {
+        Clip.copy(context, text)
+        cScope.launch { snack.showSnackbar("Copied to clipboard") }
+    }
+
+    // Device document picker → copied into the workspace under imported/.
+    val docPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            cScope.launch(Dispatchers.IO) {
+                val result = runCatching {
+                    val name = queryDocumentName(context, uri)
+                        .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                        .take(80)
+                        .ifEmpty { "document" }
+                    val dir = File(app.fileService.root, "imported")
+                    dir.mkdirs()
+                    val target = File(dir, name)
+                    val stream = context.contentResolver.openInputStream(uri)
+                        ?: error("could not open document stream")
+                    target.writeBytes(stream.use { it.readBytes() })
+                    controller.attachFile(AttachedFile("imported/$name", false, ""))
+                    name
+                }
+                withContext(Dispatchers.Main) {
+                    result.onSuccess { n -> snack.showSnackbar("Imported $n") }
+                        .onFailure { e -> snack.showSnackbar("Import failed: ${e.message}") }
+                }
+            }
+        }
+    }
     // Photo picker (system UI on API 33+, legacy fallback below) → ImagePart.
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
@@ -133,7 +190,8 @@ fun ChatTab() {
         controller.refreshModels(force = baseUrl != null)
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
         ChatHeader(
             modelLabel = modelId ?: "no model configured",
             models = models,
@@ -182,10 +240,26 @@ fun ChatTab() {
                     )
                 }
             }
-            items(turns, key = { it.run.id }) { turn ->
+            itemsIndexed(turns, key = { _, t -> t.run.id }) { index, turn ->
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    UserBubble(turn.userText, turn.images, turn.files)
-                    RunView(turn.run)
+                    UserBubble(
+                        turn = turn,
+                        isLast = index == turns.lastIndex,
+                        onCopy = ::copyText,
+                        onEdit = { controller.editLast() },
+                        onDelete = { controller.deleteTurn(index) },
+                        onFork = { controller.forkFrom(index) },
+                        onZoomImage = { zoomImage = it },
+                        onOpenFile = { p -> FileOpener.open(p); onOpenFileInWorkspaces(p) },
+                    )
+                    RunView(
+                        run = turn.run,
+                        modelId = turn.modelId,
+                        isLast = index == turns.lastIndex,
+                        onRetry = { controller.retryLast() },
+                        onCopy = ::copyText,
+                        onOpenFile = { p -> FileOpener.open(p); onOpenFileInWorkspaces(p) },
+                    )
                 }
             }
             if (pendingApproval != null) {
@@ -199,6 +273,9 @@ fun ChatTab() {
             value = input,
             onValueChange = { input = it },
             enabled = !controller.busy,
+            isRunning = isRunning,
+            onStop = { controller.stop() },
+            sendOnEnter = sendOnEnter,
             onSend = {
                 controller.send(input)
                 input = ""
@@ -211,6 +288,7 @@ fun ChatTab() {
                 imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             },
             onAttachFile = { showFilePicker = true },
+            onAttachDocument = { docPicker.launch(arrayOf("*/*")) },
         )
 
         if (showHistory) {
@@ -243,6 +321,9 @@ fun ChatTab() {
                 onDismiss = { showFilePicker = false },
             )
         }
+        }
+        SnackbarHost(snack, modifier = Modifier.align(Alignment.BottomStart))
+        zoomImage?.let { part -> ZoomImageDialog(part, onDismiss = { zoomImage = null }) }
     }
 }
 
@@ -428,12 +509,21 @@ private fun Chip(text: String, onClick: () -> Unit) {
 // -- turn rendering ----------------------------------------------------------
 
 @Composable
-private fun RunView(run: AgentRun) {
+private fun RunView(
+    run: AgentRun,
+    modelId: String?,
+    isLast: Boolean,
+    onRetry: () -> Unit,
+    onCopy: (String) -> Unit,
+    onOpenFile: (String) -> Unit,
+) {
     val text by run.text.collectAsState()
     val thinking by run.thinking.collectAsState()
     val toolLines by run.toolLines.collectAsState()
     val status by run.status.collectAsState()
     val error by run.error.collectAsState()
+    val usage = run.usage
+    val elapsed = run.elapsedMs
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (thinking.isNotEmpty()) {
@@ -443,52 +533,224 @@ private fun RunView(run: AgentRun) {
             )
         }
         toolLines.forEach { line ->
-            ToolLineView(line)
+            ToolLineView(line, onOpenFile = onOpenFile)
         }
-        when {
-            text.isNotEmpty() -> AgentBubble(text)
-            status == AgentRun.Status.RUNNING -> AgentBubble("…")
+        if (text.isNotEmpty()) {
+            AgentBubble(text, onCopy)
+        } else if (status == AgentRun.Status.RUNNING) {
+            AgentBubble("…") {}
         }
-        if (error != null) {
+        if (status == AgentRun.Status.CANCELED) {
             Text(
-                text = "Error: $error",
-                fontSize = 12.sp,
-                color = LinkRead,
+                text = "stopped by user",
+                fontSize = 10.sp,
+                color = TextSecondary,
                 modifier = Modifier.padding(start = 12.dp),
             )
         }
-    }
-}
-
-@Composable
-private fun UserBubble(text: String, images: List<ImagePart>, files: List<AttachedFile> = emptyList()) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(12.dp, 4.dp, 12.dp, 12.dp))
-                .background(UserBubble)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+        if (error != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Error: $error",
+                    fontSize = 12.sp,
+                    color = LinkRead,
+                    modifier = Modifier.weight(1f),
+                )
+                if (isLast) {
+                    TextButton(onClick = onRetry) { Text("Retry", fontSize = 12.sp) }
+                }
+            }
+        }
+        if (status != AgentRun.Status.RUNNING &&
+            (usage.promptTokens + usage.completionTokens > 0 || elapsed > 0)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (text.isNotBlank()) {
-                    Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                }
-                images.forEach { part ->
-                    ImagePartView(part, Modifier.height(72.dp))
-                }
-                files.forEach { f ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (elapsed > 0) {
                     Text(
-                        text = "attached ${if (f.isFolder) "folder" else "file"}: ${f.path}",
-                        fontSize = 10.sp,
+                        text = formatElapsed(elapsed),
+                        fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
-                        color = UserBubbleText.copy(alpha = 0.75f),
+                        color = TextSecondary,
+                    )
+                }
+                if (usage.promptTokens + usage.completionTokens > 0) {
+                    Text(
+                        text = "${usage.promptTokens}+${usage.completionTokens} tok",
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = TextSecondary,
+                    )
+                }
+                if (modelId != null) {
+                    Text(
+                        text = modelId,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = TextSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }
         }
     }
+}
+
+private fun formatElapsed(ms: Long): String =
+    if (ms < 60_000) "${ms / 1000} s" else "${ms / 3_600_000} m ${ms % 60_000 / 1000} s"
+
+@Composable
+private fun UserBubble(
+    turn: ChatController.Turn,
+    isLast: Boolean,
+    onCopy: (String) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onFork: () -> Unit,
+    onZoomImage: (ImagePart) -> Unit,
+    onOpenFile: (String) -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    var showPrompt by remember { mutableStateOf(false) }
+    val text = turn.userText
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.End) {
+            Text(
+                text = "⋮",
+                fontSize = 15.sp,
+                color = TextSecondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { menuOpen = !menuOpen }
+                    .padding(horizontal = 10.dp, vertical = 1.dp),
+            )
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("Copy", fontSize = 12.sp) },
+                onClick = { onCopy(text.ifEmpty { "(no text)" }); menuOpen = false },
+            )
+            if (isLast && text.isNotBlank()) {
+                DropdownMenuItem(
+                    text = { Text("Edit", fontSize = 12.sp) },
+                    onClick = { onEdit(); menuOpen = false },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Fork from here", fontSize = 12.sp) },
+                onClick = { onFork(); menuOpen = false },
+            )
+            DropdownMenuItem(
+                text = { Text("Delete", fontSize = 12.sp, color = LinkRead) },
+                onClick = { onDelete(); menuOpen = false },
+            )
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp, 4.dp, 12.dp, 12.dp))
+                    .background(UserBubble)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (text.isNotBlank()) {
+                        Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    turn.images.forEach { part ->
+                        ImagePartView(part, Modifier.height(72.dp).clickable { onZoomImage(part) })
+                    }
+                    turn.files.forEach { f ->
+                        Text(
+                            text = "attached ${if (f.isFolder) "folder" else "file"}: ${f.path}",
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = UserBubbleText.copy(alpha = 0.75f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clickable { onOpenFile(f.path) },
+                        )
+                    }
+                }
+            }
+        }
+        if (turn.sentPrompt.isNotBlank() && turn.sentPrompt != text) {
+            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+                Text(
+                    text = if (showPrompt) "▾ prompt sent" else "▸ prompt sent",
+                    fontSize = 9.sp,
+                    color = UserBubbleText.copy(alpha = 0.6f),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable { showPrompt = !showPrompt }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+                if (showPrompt) {
+                    SelectionContainer {
+                        Text(
+                            text = turn.sentPrompt,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = UserBubbleText.copy(alpha = 0.85f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(UserBubble)
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Full-screen-ish image zoom for message attachments. */
+@Composable
+private fun ZoomImageDialog(part: ImagePart, onDismiss: () -> Unit) {
+    var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(part.dataBase64) {
+        bitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = Base64.decode(part.dataBase64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close", fontSize = 12.sp) }
+        },
+        text = {
+            val bmp = bitmap
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp,
+                    contentDescription = "attachment",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp)),
+                )
+            } else {
+                Text("decoding…", fontSize = 12.sp, color = TextSecondary)
+            }
+        },
+        containerColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.85f),
+        shape = RoundedCornerShape(12.dp),
+    )
 }
 
 /** A decoded image attachment (e.g. a Test-tab screenshot) inside a message. */
@@ -517,18 +779,20 @@ private fun ImagePartView(part: ImagePart, modifier: Modifier = Modifier) {
     }
 }
 
+/** Agent reply rendered as markdown; tap copies, long-press selects. */
 @Composable
-private fun AgentBubble(text: String) {
+private fun AgentBubble(text: String, onCopy: (String) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth()) {
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(4.dp, 12.dp, 12.dp, 4.dp))
                 .background(AgentBubble)
+                .clickable { onCopy(text) }
                 .padding(horizontal = 14.dp, vertical = 10.dp)
                 .padding(end = 36.dp),
         ) {
             SelectionContainer {
-                Text(text, color = TextPrimary, fontSize = 14.sp)
+                MarkdownText(text, color = TextPrimary, fontSize = 14.sp)
             }
         }
     }
@@ -559,10 +823,12 @@ private fun ThinkingBlock(label: String, content: String) {
     }
 }
 
-/** F-004: compact tool line with status color. */
+/** F-004: compact tool line — tap to expand detail, open the file, or view a diff. */
 @Composable
-private fun ToolLineView(line: ToolLine) {
-    val color = when {
+private fun ToolLineView(line: ToolLine, onOpenFile: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(line.status == ToolLine.Status.ERROR) }
+    var showDiff by remember { mutableStateOf(false) }
+    val dotColor = when {
         line.status == ToolLine.Status.ERROR -> LinkRead
         line.status == ToolLine.Status.DENIED -> AmberStatus
         line.name == "read" -> LinkRead
@@ -570,23 +836,106 @@ private fun ToolLineView(line: ToolLine) {
         line.name == "write" || line.name == "edit" -> LinkWrite
         else -> TextSecondary
     }
+    val hasDiff = line.name in setOf("write", "edit") &&
+        line.extra["old"] != null && line.extra["new"] != null
+    val path = line.extra["path"]
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 12.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Text(line.summary, fontSize = 12.sp, color = color)
-        val detail = line.detail
-        if (detail != null && line.status != ToolLine.Status.RUNNING) {
-            Text(detail, fontSize = 11.sp, color = TextSecondary, maxLines = 2)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(dotColor),
+            )
+            Text(line.summary, fontSize = 12.sp, color = dotColor, modifier = Modifier.weight(1f))
+            Text(
+                text = if (expanded) "▾" else "▸",
+                fontSize = 10.sp,
+                color = TextSecondary,
+            )
+        }
+        if (expanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(TileStone)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                line.detail?.let {
+                    Text(it, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = TextSecondary)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    if (path != null) {
+                        Text(
+                            text = "open file",
+                            fontSize = 10.sp,
+                            color = LinkWrite,
+                            modifier = Modifier.clickable { onOpenFile(path) },
+                        )
+                    }
+                    if (hasDiff) {
+                        Text(
+                            text = "view diff",
+                            fontSize = 10.sp,
+                            color = LinkWrite,
+                            modifier = Modifier.clickable { showDiff = true },
+                        )
+                    }
+                }
+            }
+        }
+        if (showDiff) {
+            DiffDialog(
+                title = "${line.name} — ${path ?: "file"}",
+                oldText = line.extra["old"].orEmpty(),
+                newText = line.extra["new"].orEmpty(),
+                onDismiss = { showDiff = false },
+            )
         }
     }
 }
 
-/** The approval gate's pending decision (spec §10). */
 @Composable
-private fun ApprovalCard(request: ApprovalRequest, onDecide: (Boolean) -> Unit) {
+private fun DiffDialog(title: String, oldText: String, newText: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close", fontSize = 12.sp) }
+        },
+        title = {
+            Text(
+                text = title,
+                fontSize = 12.sp,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        text = {
+            DiffView(oldText, newText, modifier = Modifier.heightIn(max = 400.dp))
+        },
+    )
+}
+
+/** The approval gate's pending decision — Allow / Allow-always (this session) / Deny. */
+@Composable
+private fun ApprovalCard(request: ApprovalRequest, onDecide: (Boolean, Boolean) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -610,9 +959,19 @@ private fun ApprovalCard(request: ApprovalRequest, onDecide: (Boolean) -> Unit) 
             color = TextSecondary,
             maxLines = 4,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
-            Button(onClick = { onDecide(true) }) { Text("Allow") }
-            OutlinedButton(onClick = { onDecide(false) }) { Text("Deny") }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        ) {
+            OutlinedButton(onClick = { onDecide(false, false) }, modifier = Modifier.weight(1f)) {
+                Text("Deny", fontSize = 12.sp)
+            }
+            Button(onClick = { onDecide(true, false) }, modifier = Modifier.weight(1f)) {
+                Text("Allow", fontSize = 12.sp)
+            }
+            OutlinedButton(onClick = { onDecide(true, true) }, modifier = Modifier.weight(1.4f)) {
+                Text("Always this session", fontSize = 10.sp)
+            }
         }
     }
 }
@@ -624,6 +983,9 @@ private fun InputBar(
     value: String,
     onValueChange: (String) -> Unit,
     enabled: Boolean,
+    isRunning: Boolean,
+    onStop: () -> Unit,
+    sendOnEnter: Boolean,
     onSend: () -> Unit,
     pendingImages: List<ImagePart>,
     onRemoveImage: (Int) -> Unit,
@@ -631,6 +993,7 @@ private fun InputBar(
     onRemoveFile: (Int) -> Unit = {},
     onAttachImage: () -> Unit = {},
     onAttachFile: () -> Unit = {},
+    onAttachDocument: () -> Unit = {},
 ) {
     var attachMenu by remember { mutableStateOf(false) }
     Column(
@@ -747,6 +1110,13 @@ private fun InputBar(
                             onAttachFile()
                         },
                     )
+                    DropdownMenuItem(
+                        text = { Text("document from device", fontSize = 12.sp) },
+                        onClick = {
+                            attachMenu = false
+                            onAttachDocument()
+                        },
+                    )
                 }
             }
             TextField(
@@ -755,6 +1125,15 @@ private fun InputBar(
                 enabled = enabled,
                 placeholder = { Text("Type anything here…", fontSize = 14.sp) },
                 modifier = Modifier.weight(1f),
+                // Enter inserts a line break by default; "send on Enter" is an
+                // opt-in setting (General, Connections tab) — default OFF.
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = if (sendOnEnter) ImeAction.Send else ImeAction.None,
+                ),
+                keyboardActions = KeyboardActions(onSend = {
+                    if (sendOnEnter) onSend()
+                }),
                 colors = androidx.compose.material3.TextFieldDefaults.colors(
                     focusedContainerColor = TileStone,
                     unfocusedContainerColor = TileStone,
@@ -763,12 +1142,32 @@ private fun InputBar(
                     unfocusedIndicatorColor = BevelLight,
                 ),
             )
-            Button(
-                onClick = onSend,
-                enabled = enabled &&
-                    (value.isNotBlank() || pendingImages.isNotEmpty() || pendingFiles.isNotEmpty()),
-            ) {
-                Text("Send")
+            if (isRunning) {
+                // Stop: square icon inside the usual send-button footprint.
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(AgentBubble)
+                        .clickable(onClick = onStop)
+                        .padding(2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(UserBubbleText),
+                    )
+                }
+            } else {
+                Button(
+                    onClick = onSend,
+                    enabled = enabled &&
+                        (value.isNotBlank() || pendingImages.isNotEmpty() || pendingFiles.isNotEmpty()),
+                ) {
+                    Text("Send")
+                }
             }
         }
     }
@@ -817,6 +1216,22 @@ private fun HistoryDialog(
                 }) {
                     Text("new chat")
                 }
+                var query by remember { mutableStateOf("") }
+                if (list != null) {
+                    TextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = { Text("search chats…", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = androidx.compose.material3.TextFieldDefaults.colors(
+                            focusedContainerColor = TileStone,
+                            unfocusedContainerColor = TileStone,
+                            focusedIndicatorColor = BevelLight,
+                            unfocusedIndicatorColor = BevelLight,
+                        ),
+                    )
+                }
                 val del = list?.firstOrNull { it.id == deletingId }
                 if (del != null) {
                     // Delete confirmation replaces the list.
@@ -854,7 +1269,15 @@ private fun HistoryDialog(
                         color = TextSecondary,
                     )
                 } else {
-                    list.forEach { s ->
+                    val visible = list.filter { s ->
+                        query.isBlank() ||
+                            s.title.contains(query, true) ||
+                            s.turns.any { t -> t.userText.contains(query, true) }
+                    }
+                    if (visible.isEmpty()) {
+                        Text("no matches.", fontSize = 12.sp, color = TextSecondary)
+                    }
+                    visible.forEach { s ->
                         val isCurrent = s.id == currentSessionId
                         if (renamingId == s.id) {
                             Row(
@@ -1096,6 +1519,14 @@ private fun decodePickedImage(context: Context, uri: Uri): ImagePart? = runCatch
     bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
     ImagePart("image/jpeg", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
 }.getOrNull()
+
+/** Display name for a document-picked URI (falls back to "document"). */
+private fun queryDocumentName(context: Context, uri: Uri): String = runCatching {
+    context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+        val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && c.moveToFirst()) c.getString(idx) else "document"
+    } ?: "document"
+}.getOrDefault("document")
 
 private fun timeAgo(ts: Long): String {
     val s = (System.currentTimeMillis() - ts) / 1000

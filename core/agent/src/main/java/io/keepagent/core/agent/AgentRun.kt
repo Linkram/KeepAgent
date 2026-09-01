@@ -55,7 +55,18 @@ class AgentRun {
     var usage: LlmUsage = LlmUsage()
         private set
 
+    /** Set when the turn ends (complete/cancel/fail); 0 while running. */
+    @Volatile
+    var finishedAtMillis: Long = 0L
+
     val isRunning: Boolean get() = _status.value == Status.RUNNING
+
+    val elapsedMs: Long
+        get() = when {
+            finishedAtMillis > createdAtMillis -> finishedAtMillis - createdAtMillis
+            isRunning -> System.currentTimeMillis() - createdAtMillis
+            else -> 0L
+        }
 
     fun appendText(delta: String) {
         _text.value += delta
@@ -83,15 +94,18 @@ class AgentRun {
 
     fun complete() {
         _status.value = Status.DONE
+        if (finishedAtMillis == 0L) finishedAtMillis = System.currentTimeMillis()
     }
 
     /** The user stopped the turn (stop button / notification action). */
     fun cancel() {
         _status.value = Status.CANCELED
+        if (finishedAtMillis == 0L) finishedAtMillis = System.currentTimeMillis()
     }
 
     fun fail(message: String) {
         _error.value = message
         _status.value = Status.ERROR
+        if (finishedAtMillis == 0L) finishedAtMillis = System.currentTimeMillis()
     }
 }
