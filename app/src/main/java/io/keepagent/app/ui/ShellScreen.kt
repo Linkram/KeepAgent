@@ -53,8 +53,13 @@ import io.keepagent.app.ui.tabs.ConsoleTab
 import io.keepagent.app.ui.tabs.TestTab
 import io.keepagent.app.ui.tabs.WorkspacesTab
 import io.keepagent.app.ui.theme.AmberStatus
-import io.keepagent.app.ui.theme.BarStone
+import io.keepagent.app.ui.theme.BarChip
+import io.keepagent.app.ui.theme.BarDark
 import io.keepagent.app.ui.theme.BevelLight
+import io.keepagent.app.ui.theme.TabBrown
+import io.keepagent.app.ui.theme.TabBrownActive
+import io.keepagent.app.ui.theme.TabGlyph
+import io.keepagent.app.ui.theme.TabLabelOn
 import io.keepagent.app.ui.theme.TileStone
 import io.keepagent.app.ui.theme.TileStoneSelected
 import io.keepagent.app.ui.theme.TextPrimary
@@ -98,14 +103,15 @@ fun KeepAgentShell() {
         Column(
             modifier = Modifier
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .background(BarStone),
+                .background(BarDark),
         ) {
             HeaderBar()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
+                    .height(64.dp)
                     .padding(horizontal = 4.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 TABS.forEachIndexed { index, (label, icon) ->
                     TabTile(
@@ -264,70 +270,79 @@ private val TABS = listOf(
     "Connections" to R.drawable.ic_tab_connections,
 )
 
+/** "1234" -> "1K", "999" -> "999" — compact token counts for the header chip. */
+private fun fmtK(n: Int): String = if (n >= 1000) "${(n + 500) / 1000}K" else "$n"
+
+/**
+ * Mockup header: model name on the left, two dark status chips on the
+ * right (avg speed, context in/out/max + gauge).
+ */
 @Composable
 private fun HeaderBar() {
+    val app = Holder.app
+    val model = app.currentModelId()
+    val stats by app.chatController.stats.collectAsState()
+    val tps = if (stats.elapsedMs > 0) stats.completionTokens * 1000f / stats.elapsedMs else 0f
+    val fraction = if (stats.contextLimit > 0)
+        (stats.lastPromptTokens / stats.contextLimit.toFloat()).coerceIn(0f, 1f)
+    else 0f
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val app = Holder.app
-        val model = app.currentModelId()
-        val workspace = runCatching { app.workspaceManager.activeName() }.getOrDefault("—")
-        val fileAccess = runCatching {
-            io.keepagent.core.settings.FileAccess.from(
-                app.settingsStore.getString(
-                    io.keepagent.core.settings.SettingsStore.NS_GENERAL,
-                    "fileAccess",
-                ),
-            ).name.lowercase()
-        }.getOrDefault("workspace")
-        Column(modifier = Modifier.weight(1f)) {
+        Text(
+            text = model ?: "no model configured",
+            fontSize = 15.sp,
+            color = TextPrimary,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = if (tps > 0) "Avg. Speed: ${tps.roundToInt()} t/s" else "Avg. Speed: — t/s",
+            fontSize = 9.sp,
+            color = AmberStatus,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(BarChip)
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(BarChip)
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        ) {
             Text(
-                text = model ?: "no model configured",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
+                text = "Context: in:${fmtK(stats.lastPromptTokens)} " +
+                    "out:${fmtK(stats.completionTokens)} Max:${fmtK(stats.contextLimit)}",
+                fontSize = 9.sp,
                 color = TextPrimary,
+                maxLines = 1,
             )
+            Spacer(modifier = Modifier.width(6.dp))
+            ContextGauge(fraction)
             Text(
-                text = "workspace: $workspace · files: $fileAccess",
-                fontSize = 10.sp,
+                text = "${(fraction * 100).roundToInt()}%",
+                fontSize = 9.sp,
                 color = TextSecondary,
             )
         }
-        val stats by app.chatController.stats.collectAsState()
-        val tps = if (stats.elapsedMs > 0) stats.completionTokens * 1000f / stats.elapsedMs else 0f
-        Column(horizontalAlignment = Alignment.End) {
-            Text("Avg. Speed", fontSize = 8.sp, color = TextSecondary)
-            Text(
-                text = if (tps > 0) "${tps.roundToInt()} t/s" else "— t/s",
-                fontSize = 10.sp,
-                color = AmberStatus,
-            )
-        }
-        Spacer(modifier = Modifier.width(10.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            Text("Context used", fontSize = 8.sp, color = TextSecondary)
-            Text(
-                text = if (stats.contextLimit > 0)
-                    "${stats.lastPromptTokens}/${stats.contextLimit}" else "—/—",
-                fontSize = 10.sp,
-                color = AmberStatus,
-                maxLines = 1,
-            )
-        }
-        Spacer(modifier = Modifier.width(8.dp))
-        ContextGauge(fraction = if (stats.contextLimit > 0) stats.lastPromptTokens / stats.contextLimit.toFloat() else 0f)
     }
 }
 
 /** Small context gauge ring, echoing the mockup header. */
 @Composable
 private fun ContextGauge(fraction: Float) {
-    Box(modifier = Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val stroke = 3.dp.toPx()
+            val stroke = 2.5.dp.toPx()
             val sweep = 360f * fraction.coerceIn(0f, 1f)
             drawArc(
                 color = TileStone,
@@ -344,7 +359,6 @@ private fun ContextGauge(fraction: Float) {
                 style = Stroke(width = stroke),
             )
         }
-        Text("M1", fontSize = 8.sp, color = TextSecondary)
     }
 }
 
@@ -357,13 +371,13 @@ private fun TabTile(
     running: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(3.dp)
+    // Mockup tiles: brown with a dark glyph; the active tile goes pale.
+    val shape = RoundedCornerShape(6.dp)
     Box(
         modifier = modifier
             .fillMaxHeight()
             .clip(shape)
-            .background(if (selected) TileStoneSelected else TileStone)
-            .border(width = 1.dp, color = if (selected) BevelLight else Color.Transparent, shape = shape)
+            .background(if (selected) TabBrownActive else TabBrown)
             .clickable(onClick = onClick),
     ) {
         // Activity dot while the agent is mid-turn.
@@ -387,15 +401,15 @@ private fun TabTile(
             Icon(
                 painter = painterResource(iconRes),
                 contentDescription = null,
-                tint = if (selected) TextPrimary else TextSecondary,
-                modifier = Modifier.size(17.dp),
+                tint = TabGlyph,
+                modifier = Modifier.size(26.dp),
             )
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = label,
-                fontSize = 10.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) TextPrimary else TextSecondary,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (selected) TabLabelOn else Color(0xFFF3EDE4),
                 textAlign = TextAlign.Center,
                 maxLines = 1,
             )

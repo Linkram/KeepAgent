@@ -12,8 +12,8 @@ android {
         applicationId = "io.keepagent"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.0-m1.4h-fix"
+        versionCode = 6
+        versionName = "0.1.0-m1.4i"
         vectorDrawables { useSupportLibrary = true }
     }
 

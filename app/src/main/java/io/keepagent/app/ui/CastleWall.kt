@@ -11,17 +11,18 @@ import io.keepagent.app.ui.theme.WallBase
 import io.keepagent.app.ui.theme.WallBrick
 
 /**
- * Subtle wall backdrop (F-014): low-contrast brick joints over the wall
- * base color, matching the mockup. Brick tints are deterministic per
- * position so the texture is stable across redraws.
+ * Brick wall backdrop (F-014): low-contrast brick joints over the mortar
+ * base, matching the mockup. Brick tints are deterministic per position so
+ * the texture is stable across redraws. Brick size is relative to the view
+ * so it reads the same on any screen.
  */
 @Composable
 fun CastleWallBackground(modifier: Modifier = Modifier) {
     Canvas(modifier = modifier) {
         drawRect(color = WallBase)
-        val brickW = 72f
-        val brickH = 26f
-        val gap = 1.5f
+        val brickW = size.width / 5f
+        val brickH = brickW / 3.2f
+        val gap = maxOf(2f, brickW * 0.03f)
         var row = 0
         var y = 0f
         while (y < size.height) {
@@ -30,11 +31,11 @@ fun CastleWallBackground(modifier: Modifier = Modifier) {
             var col = 0
             while (x < size.width) {
                 val tint = ((row * 31 + col * 17) % 5) // 0..4
-                val brick = lerp(WallBase, WallBrick, 0.45f + tint * 0.05f)
+                val brick = lerp(WallBase, WallBrick, 0.55f + tint * 0.09f)
                 drawRoundRect(
                     topLeft = Offset(x + gap / 2f, y + gap / 2f),
                     size = Size(brickW - gap, brickH - gap),
-                    cornerRadius = CornerRadius(2f, 2f),
+                    cornerRadius = CornerRadius(3f, 3f),
                     color = brick,
                 )
                 x += brickW

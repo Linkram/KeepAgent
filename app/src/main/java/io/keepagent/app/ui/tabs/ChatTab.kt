@@ -9,6 +9,7 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,10 +61,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -98,6 +102,7 @@ import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BevelLight
 import io.keepagent.app.ui.theme.LinkRead
 import io.keepagent.app.ui.theme.LinkSearch
+import io.keepagent.app.ui.theme.InputStone
 import io.keepagent.app.ui.theme.LinkWrite
 import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
@@ -535,10 +540,16 @@ private fun RunView(
         toolLines.forEach { line ->
             ToolLineView(line, onOpenFile = onOpenFile)
         }
+        // Mockup-style header inside the reply bubble.
+        val bubbleHeader = when {
+            thinking.isNotEmpty() -> "Thought for ${shortElapsed(elapsed)}"
+            status == AgentRun.Status.DONE && elapsed > 0 -> "Worked for ${shortElapsed(elapsed)}"
+            else -> null
+        }
         if (text.isNotEmpty()) {
-            AgentBubble(text, onCopy)
+            AgentBubble(text, onCopy, bubbleHeader)
         } else if (status == AgentRun.Status.RUNNING) {
-            AgentBubble("…") {}
+            AgentBubble(text = "…", onCopy = {}, header = "Working…")
         }
         if (status == AgentRun.Status.CANCELED) {
             Text(
@@ -658,17 +669,20 @@ private fun UserBubble(
                 onClick = { onDelete(); menuOpen = false },
             )
         }
+        // Mockup bubble: wide sage block with a speech tail at bottom-right.
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp, 4.dp, 12.dp, 12.dp))
-                    .background(UserBubble)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (text.isNotBlank()) {
-                        Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    }
+            Column(horizontalAlignment = Alignment.End) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.82f)
+                        .clip(RoundedCornerShape(12.dp, 4.dp, 12.dp, 12.dp))
+                        .background(UserBubble)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (text.isNotBlank()) {
+                            Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
                     turn.images.forEach { part ->
                         ImagePartView(part, Modifier.height(72.dp).clickable { onZoomImage(part) })
                     }
@@ -683,7 +697,9 @@ private fun UserBubble(
                             modifier = Modifier.clickable { onOpenFile(f.path) },
                         )
                     }
+                    }
                 }
+                BubbleTail(color = UserBubble, tailEnd = true, modifier = Modifier.padding(start = 14.dp))
             }
         }
         if (turn.sentPrompt.isNotBlank() && turn.sentPrompt != text) {
@@ -781,21 +797,61 @@ private fun ImagePartView(part: ImagePart, modifier: Modifier = Modifier) {
 
 /** Agent reply rendered as markdown; tap copies, long-press selects. */
 @Composable
-private fun AgentBubble(text: String, onCopy: (String) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth()) {
+private fun AgentBubble(text: String, onCopy: (String) -> Unit, header: String? = null) {
+    // Mockup bubble: wide dark block, italic "worked/thought for …" header,
+    // speech tail at bottom-left.
+    Column {
         Box(
             modifier = Modifier
+                .fillMaxWidth(0.82f)
                 .clip(RoundedCornerShape(4.dp, 12.dp, 12.dp, 4.dp))
                 .background(AgentBubble)
                 .clickable { onCopy(text) }
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-                .padding(end = 36.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            SelectionContainer {
-                MarkdownText(text, color = TextPrimary, fontSize = 14.sp)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (header != null) {
+                    Text(
+                        text = header,
+                        fontSize = 10.sp,
+                        fontStyle = FontStyle.Italic,
+                        color = TextSecondary,
+                    )
+                }
+                SelectionContainer {
+                    MarkdownText(text, color = TextPrimary, fontSize = 14.sp)
+                }
             }
         }
+        BubbleTail(color = AgentBubble, tailEnd = false, modifier = Modifier.padding(end = 14.dp))
     }
+}
+
+/** Speech tail under a chat bubble (mockup): small slanted triangle. */
+@Composable
+private fun BubbleTail(color: Color, tailEnd: Boolean, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.size(width = 22.dp, height = 10.dp)) {
+        val path = Path().apply {
+            if (tailEnd) {
+                moveTo(size.width - 18f, 0f)
+                lineTo(size.width, 0f)
+                lineTo(size.width - 4f, size.height)
+            } else {
+                moveTo(0f, 0f)
+                lineTo(18f, 0f)
+                lineTo(4f, size.height)
+            }
+            close()
+        }
+        drawPath(path, color)
+    }
+}
+
+/** Compact elapsed time for bubble headers: "3s" / "12m" / "1h". */
+private fun shortElapsed(ms: Long): String = when {
+    ms < 60_000 -> "${ms / 1000}s"
+    ms < 3_600_000 -> "${ms / 60_000}m"
+    else -> "${ms / 3_600_000}h"
 }
 
 /** F-003: thinking block — collapsed by default, tap to expand. */
@@ -1078,11 +1134,12 @@ private fun InputBar(
                 }
             }
         }
+        // Mockup input: one flat stone strip, attach icon left, field, send.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                .background(TileStone)
+                .background(InputStone)
                 .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1135,11 +1192,11 @@ private fun InputBar(
                     if (sendOnEnter) onSend()
                 }),
                 colors = androidx.compose.material3.TextFieldDefaults.colors(
-                    focusedContainerColor = TileStone,
-                    unfocusedContainerColor = TileStone,
-                    disabledContainerColor = TileStone,
-                    focusedIndicatorColor = BevelLight,
-                    unfocusedIndicatorColor = BevelLight,
+                    focusedContainerColor = InputStone,
+                    unfocusedContainerColor = InputStone,
+                    disabledContainerColor = InputStone,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
                 ),
             )
             if (isRunning) {
