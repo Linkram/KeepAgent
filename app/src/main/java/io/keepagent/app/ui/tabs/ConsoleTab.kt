@@ -1,5 +1,6 @@
 package io.keepagent.app.ui.tabs
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -17,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.core.content.FileProvider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -36,6 +38,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.keepagent.app.Holder
 import io.keepagent.app.ui.common.Clip
 import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BevelLight
@@ -50,6 +53,7 @@ import io.keepagent.core.events.EventLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -65,6 +69,7 @@ fun ConsoleTab(eventBus: EventBus, eventLog: EventLog) {
     var filter by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf<EventKind?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var expanded by remember { mutableStateOf<Set<Long>>(emptySet()) }
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -86,6 +91,45 @@ fun ConsoleTab(eventBus: EventBus, eventLog: EventLog) {
             val tail = withContext(Dispatchers.IO) { eventLog.tail(500) }
             events = tail
             notice = "reloaded ${tail.size} lines from disk"
+        }
+    }
+
+    /** Writes the visible lines to reports/ and hands them to the share sheet (M1.4h). */
+    fun exportVisible() {
+        val lines = visible(events, filter, kind).joinToString("\n") { e ->
+            "${timeFormat.format(Date(e.timestamp))}  ${e.kind.name}  ${e.source}  ${e.summary}" +
+                if (e.detail.isNotEmpty()) "\n    detail: " + e.detail.entries.joinToString("; ") { "${it.key}=${it.value}" }
+                else ""
+        }
+        scope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val dir = File(Holder.app.fileService.root, "reports")
+                dir.mkdirs()
+                File(dir, "console-export-${System.currentTimeMillis()}.txt").apply { writeText(lines) }
+            }
+            withContext(Dispatchers.Main) {
+                res.fold(
+                    { f ->
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "io.keepagent.app.fileprovider",
+                            f,
+                        )
+                        context.startActivity(
+                            Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                },
+                                "share console export",
+                            ),
+                        )
+                        notice = "exported ${f.name}"
+                    },
+                    { e -> notice = "export failed: ${e.message}" },
+                )
+            }
         }
     }
 
@@ -126,6 +170,7 @@ fun ConsoleTab(eventBus: EventBus, eventLog: EventLog) {
                     ),
                 )
                 ActionChip("copy", onClick = { copyAll() })
+                ActionChip("export", onClick = { exportVisible() })
                 ActionChip("clear", onClick = { events = emptyList(); notice = "cleared view" })
                 ActionChip("reload", onClick = { reloadFromDisk() })
             }
@@ -168,7 +213,14 @@ fun ConsoleTab(eventBus: EventBus, eventLog: EventLog) {
                 }
             }
             items(shown, key = { it.seq }) { e ->
-                EventRow(e, timeFormat)
+                EventRow(
+                    event = e,
+                    timeFormat = timeFormat,
+                    expanded = e.seq in expanded,
+                    onToggle = {
+                        expanded = if (e.seq in expanded) expanded - e.seq else expanded + e.seq
+                    },
+                )
             }
         }
     }
@@ -217,19 +269,48 @@ private fun KindChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EventRow(event: AgentEvent, timeFormat: SimpleDateFormat) {
+private fun EventRow(
+    event: AgentEvent,
+    timeFormat: SimpleDateFormat,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
     val color = when (event.kind) {
         EventKind.ERROR -> Color(0xFFE57373)
         EventKind.ADDON, EventKind.TOOL -> Color(0xFF8BC34A)
         EventKind.SYSTEM -> TextSecondary
         else -> TextPrimary
     }
-    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
-        Text(
-            text = "${timeFormat.format(Date(event.timestamp))}  ${event.kind.name.padEnd(8)}  ${event.source.padEnd(34).take(34)}  ${event.summary}",
-            fontFamily = FontFamily.Monospace,
-            fontSize = 11.sp,
-            color = color,
-        )
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle),
+        ) {
+            Text(
+                text = if (expanded) "▾ " else "▸ ",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                color = TextSecondary,
+            )
+            Text(
+                text = "${timeFormat.format(Date(event.timestamp))}  ${event.kind.name.padEnd(8)}  ${event.source.padEnd(34).take(34)}  ${event.summary}",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                color = color,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        // Detail map, expanded on tap (M1.4h).
+        if (expanded && event.detail.isNotEmpty()) {
+            event.detail.forEach { (k, v) ->
+                Text(
+                    text = "      $k = $v",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = TextSecondary,
+                )
+            }
+        }
     }
 }

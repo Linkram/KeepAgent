@@ -1,6 +1,7 @@
 package io.keepagent.app.ui.tabs
 
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Rect
@@ -11,6 +12,7 @@ import android.view.PixelCopy
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,8 +24,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -95,6 +99,11 @@ fun TestTab(onGotoChat: () -> Unit) {
     var lastShot = remember { mutableStateOf<Bitmap?>(null) }
     var consoleLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var consoleOpen by remember { mutableStateOf(false) }
+
+    // Back/forward + viewport presets + open-in-browser (M1.4h).
+    var viewport by remember { mutableStateOf("full") } // full | phone | tablet | desktop
+    var canBack by remember { mutableStateOf(false) }
+    var canFwd by remember { mutableStateOf(false) }
 
     fun setLandscape(on: Boolean) {
         landscape = on
@@ -264,6 +273,64 @@ fun TestTab(onGotoChat: () -> Unit) {
                 OutlinedButton(onClick = { webViewRef.value?.reload() }) {
                     Text("reload", fontSize = 11.sp)
                 }
+                OutlinedButton(
+                    onClick = { webViewRef.value?.goBack() },
+                    enabled = canBack,
+                ) {
+                    Text("◂ back", fontSize = 11.sp)
+                }
+                OutlinedButton(
+                    onClick = { webViewRef.value?.goForward() },
+                    enabled = canFwd,
+                ) {
+                    Text("fwd ▸", fontSize = 11.sp)
+                }
+                OutlinedButton(onClick = {
+                    val u = loadedPath
+                    if (u != null) {
+                        runCatching {
+                            context.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_VIEW, android.net.Uri.parse(u)),
+                                    "open in browser",
+                                ),
+                            )
+                        }
+                    }
+                }, enabled = loadedPath != null) {
+                    Text("browser", fontSize = 11.sp)
+                }
+            }
+            // Viewport presets (M1.4h): constrain the page to a common size.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = "viewport:",
+                    fontSize = 10.sp,
+                    color = TextSecondary,
+                )
+                listOf("full", "phone 390×844", "tablet 768×1024", "desktop 1280×800").forEach { label ->
+                    val id = label.substringBefore(' ')
+                    Text(
+                        text = label.substringAfter(' ', label),
+                        fontSize = 10.sp,
+                        color = if (viewport == id) TextPrimary else TextSecondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(
+                                if (viewport == id)
+                                    io.keepagent.app.ui.theme.TileStoneSelected
+                                else Color.Transparent,
+                            )
+                            .clickable { viewport = id }
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                    )
+                }
             }
             if (htmlFiles.isNotEmpty()) {
                 Row(
@@ -310,7 +377,14 @@ fun TestTab(onGotoChat: () -> Unit) {
                     .padding(
                         horizontal = if (fullscreen) 0.dp else 10.dp,
                         vertical = if (fullscreen) 0.dp else 4.dp,
+                    )
+                    .then(
+                        if (viewport != "full")
+                            Modifier.verticalScroll(rememberScrollState())
+                                .horizontalScroll(rememberScrollState())
+                        else Modifier,
                     ),
+                contentAlignment = Alignment.Center,
             ) {
                 AndroidView(
                 factory = { ctx ->
@@ -318,6 +392,15 @@ fun TestTab(onGotoChat: () -> Unit) {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         webViewRef.value = this
+                        // Refresh back/forward button state as pages load (M1.4h).
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView, url: String) {
+                                Handler(Looper.getMainLooper()).post {
+                                    canBack = view.canGoBack()
+                                    canFwd = view.canGoForward()
+                                }
+                            }
+                        }
                         webChromeClient = object : WebChromeClient() {
                             override fun onConsoleMessage(cm: ConsoleMessage): Boolean {
                                 val line = "${cm.messageLevel().toString().take(1)}: ${cm.message()} (${cm.sourceId()}:${cm.lineNumber()})"
@@ -329,11 +412,28 @@ fun TestTab(onGotoChat: () -> Unit) {
                         }
                     }
                 },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(8.dp))
-                    .border(width = 1.dp, color = BevelLight, shape = RoundedCornerShape(8.dp))
-                    .background(Color.White),
+                modifier = when (viewport) {
+                    "phone" -> Modifier
+                        .width(390.dp).height(844.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(width = 1.dp, color = BevelLight, shape = RoundedCornerShape(8.dp))
+                        .background(Color.White)
+                    "tablet" -> Modifier
+                        .width(768.dp).height(1024.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(width = 1.dp, color = BevelLight, shape = RoundedCornerShape(8.dp))
+                        .background(Color.White)
+                    "desktop" -> Modifier
+                        .width(1280.dp).height(800.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(width = 1.dp, color = BevelLight, shape = RoundedCornerShape(8.dp))
+                        .background(Color.White)
+                    else -> Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(width = 1.dp, color = BevelLight, shape = RoundedCornerShape(8.dp))
+                        .background(Color.White)
+                },
             )
                 if (loadedPath == null) {
                     Box(

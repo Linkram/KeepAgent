@@ -31,6 +31,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.io.File
 
 class KeepAgentApp : Application() {
 
@@ -62,6 +63,18 @@ class KeepAgentApp : Application() {
         Holder.init(this)
 
         storage = Storage(this)
+        // Crash log (M1.4h): uncaught exceptions are written to the storage
+        // root as crash-<ts>.log before the process dies.
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, e ->
+            runCatching {
+                File(storage.root, "crash-${System.currentTimeMillis()}.log").writeText(
+                    "thread: ${thread.name}\n" + e.stackTraceToString(),
+                )
+                eventBus.emit(EventKind.ERROR, "app", "uncaught exception: ${e.message}")
+            }
+            defaultHandler?.uncaughtException(thread, e)
+        }
         settingsStore = SettingsStore(this)
         eventLog = EventLog(storage.eventsFile)
         eventBus = EventBus(eventLog)

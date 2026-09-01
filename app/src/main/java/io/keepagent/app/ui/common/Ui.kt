@@ -33,3 +33,13 @@ object Pending {
     @Volatile
     var sharedImport: String? = null
 }
+
+/** Recently opened workspace files (M1.4h), shown at the top of the browser. */
+object Recents {
+    @Volatile
+    var files: List<String> = emptyList()
+
+    fun add(relPath: String) {
+        files = (listOf(relPath) + files).distinct().take(6)
+    }
+}

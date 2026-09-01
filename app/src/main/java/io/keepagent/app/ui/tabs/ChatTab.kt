@@ -1191,6 +1191,10 @@ private fun HistoryDialog(
     var renamingId by remember { mutableStateOf<String?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deletingId by remember { mutableStateOf<String?>(null) }
+    // Multi-select delete (M1.4h).
+    var multiSelect by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var confirmMulti by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         sessions.value = withContext(Dispatchers.IO) { controller.listSessions() }
@@ -1210,11 +1214,40 @@ private fun HistoryDialog(
         text = {
             val list = sessions.value
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Button(onClick = {
-                    onNewChat()
-                    reload()
-                }) {
-                    Text("new chat")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(onClick = {
+                        onNewChat()
+                        reload()
+                    }) {
+                        Text("new chat")
+                    }
+                    TextButton(onClick = {
+                        multiSelect = !multiSelect
+                        selectedIds = emptySet()
+                        confirmMulti = false
+                    }) {
+                        Text(
+                            if (multiSelect) "done selecting" else "select several",
+                            fontSize = 11.sp,
+                            color = TextSecondary,
+                        )
+                    }
+                }
+                if (multiSelect) {
+                    TextButton(
+                        onClick = { confirmMulti = true },
+                        enabled = selectedIds.isNotEmpty(),
+                    ) {
+                        Text(
+                            "delete selected (${selectedIds.size})",
+                            fontSize = 11.sp,
+                            color = AmberStatus,
+                        )
+                    }
                 }
                 var query by remember { mutableStateOf("") }
                 if (list != null) {
@@ -1232,6 +1265,36 @@ private fun HistoryDialog(
                         ),
                     )
                 }
+                if (confirmMulti) {
+                    // Multi-delete confirmation replaces the list (M1.4h).
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "Delete ${selectedIds.size} chat(s)?",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextPrimary,
+                        )
+                        Text(
+                            "This cannot be undone.",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                confirmMulti = false
+                                selectedIds.forEach { onDelete(it) }
+                                selectedIds = emptySet()
+                                multiSelect = false
+                                reload()
+                            }) {
+                                Text("delete")
+                            }
+                            TextButton(onClick = { confirmMulti = false }) {
+                                Text("cancel")
+                            }
+                        }
+                    }
+                } else {
                 val del = list?.firstOrNull { it.id == deletingId }
                 if (del != null) {
                     // Delete confirmation replaces the list.
@@ -1308,16 +1371,35 @@ private fun HistoryDialog(
                                 }
                             }
                         } else {
+                            val isSel = s.id in selectedIds
                             Column(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .clickable { onOpen(s.id) }
+                                    .background(
+                                        if (multiSelect && isSel) TileStone
+                                        else androidx.compose.ui.graphics.Color.Transparent,
+                                    )
+                                    .clickable {
+                                        if (multiSelect) {
+                                            selectedIds =
+                                                if (isSel) selectedIds - s.id else selectedIds + s.id
+                                        } else {
+                                            onOpen(s.id)
+                                        }
+                                    }
                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
+                                    if (multiSelect) {
+                                        Text(
+                                            text = if (isSel) "☑" else "☐",
+                                            fontSize = 12.sp,
+                                            color = if (isSel) TextPrimary else TextSecondary,
+                                        )
+                                    }
                                     Text(
                                         text = s.title,
                                         fontSize = 12.sp,
@@ -1327,30 +1409,32 @@ private fun HistoryDialog(
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f),
                                     )
-                                    IconButton(
-                                        onClick = {
-                                            renamingId = s.id
-                                            renameText = s.title
-                                        },
-                                        modifier = Modifier.size(22.dp),
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(R.drawable.ic_edit),
-                                            contentDescription = "rename",
-                                            tint = TextSecondary,
-                                            modifier = Modifier.size(11.dp),
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { deletingId = s.id },
-                                        modifier = Modifier.size(22.dp),
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(R.drawable.ic_delete),
-                                            contentDescription = "delete",
-                                            tint = AmberStatus,
-                                            modifier = Modifier.size(11.dp),
-                                        )
+                                    if (!multiSelect) {
+                                        IconButton(
+                                            onClick = {
+                                                renamingId = s.id
+                                                renameText = s.title
+                                            },
+                                            modifier = Modifier.size(22.dp),
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(R.drawable.ic_edit),
+                                                contentDescription = "rename",
+                                                tint = TextSecondary,
+                                                modifier = Modifier.size(11.dp),
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { deletingId = s.id },
+                                            modifier = Modifier.size(22.dp),
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(R.drawable.ic_delete),
+                                                contentDescription = "delete",
+                                                tint = AmberStatus,
+                                                modifier = Modifier.size(11.dp),
+                                            )
+                                        }
                                     }
                                 }
                                 Text(
@@ -1361,6 +1445,7 @@ private fun HistoryDialog(
                             }
                         }
                     }
+                }
                 }
             }
         },

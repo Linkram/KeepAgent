@@ -1,5 +1,8 @@
 package io.keepagent.app.ui.tabs
 
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,7 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.core.content.FileProvider
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.app.ApiConnection
 import io.keepagent.app.Holder
+import io.keepagent.app.KeepAgentApp
 import io.keepagent.app.R
 import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BevelLight
@@ -56,6 +62,10 @@ import io.keepagent.core.settings.SettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.jsonObject
+import java.io.File
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 /**
  * Connections tab (M1.1): named OpenAI-compatible API connections —
@@ -118,7 +128,7 @@ fun ConnectionsTab() {
             }
         }
 
-        GeneralSection(app.settingsStore)
+        GeneralSection(app)
 
         if (list.isEmpty()) {
             Box(
@@ -491,7 +501,8 @@ private fun ConnectionDialog(
  * context gauge read the same keys.
  */
 @Composable
-private fun GeneralSection(store: SettingsStore) {
+private fun GeneralSection(app: KeepAgentApp) {
+    val store = app.settingsStore
     var open by remember { mutableStateOf(false) }
     val sendOnEnter = store.getString(SettingsStore.NS_GENERAL, "sendOnEnter") == "true"
     val verbose = store.getString(SettingsStore.NS_GENERAL, "llmLogVerbose") == "true"
@@ -557,7 +568,173 @@ private fun GeneralSection(store: SettingsStore) {
                 value = contextLimit,
                 onCommit = { store.setString(SettingsStore.NS_MODEL, "contextLimit", it) },
             )
+            BackupRow(app)
         }
+    }
+}
+
+/**
+ * Backup export/import (M1.4h): settings + saved chats + event log packed as
+ * a zip. Export shares it; import restores from a picked zip.
+ */
+@Composable
+private fun BackupRow(app: KeepAgentApp) {
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var notice by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    fun doExport() {
+        busy = true
+        scope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val zip = File(context.cacheDir, "keepagent-backup-${System.currentTimeMillis()}.zip")
+                ZipOutputStream(zip.outputStream()).use { zos ->
+                    listOf(
+                        SettingsStore.NS_GENERAL,
+                        SettingsStore.NS_SESSIONS,
+                        SettingsStore.NS_ADDONS,
+                        SettingsStore.NS_MODEL,
+                        SettingsStore.NS_CONNECTIONS,
+                    ).forEach { ns ->
+                        zos.putNextEntry(java.util.zip.ZipEntry("settings/$ns.json"))
+                        zos.write(app.settingsStore.get(ns).toString().toByteArray())
+                        zos.closeEntry()
+                    }
+                    File(app.filesDir, "keepagent/chats").listFiles()
+                        ?.filter { it.isFile }
+                        ?.forEach { f ->
+                            zos.putNextEntry(java.util.zip.ZipEntry("chats/${f.name}"))
+                            f.inputStream().use { it.copyTo(zos) }
+                            zos.closeEntry()
+                        }
+                    val ev = File(app.storage.root, "events/stream.jsonl")
+                    if (ev.exists()) {
+                        zos.putNextEntry(java.util.zip.ZipEntry("events/stream.jsonl"))
+                        ev.inputStream().use { it.copyTo(zos) }
+                        zos.closeEntry()
+                    }
+                }
+                zip
+            }
+            withContext(Dispatchers.Main) {
+                busy = false
+                res.fold(
+                    { zip ->
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "io.keepagent.app.fileprovider",
+                            zip,
+                        )
+                        context.startActivity(
+                            Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).apply {
+                                    type = "application/zip"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                },
+                                "share backup",
+                            ),
+                        )
+                        notice = "backup exported: settings + chats + event log"
+                    },
+                    { e -> notice = "export failed: ${e.message}" },
+                )
+            }
+        }
+    }
+
+    val importPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: error("could not open backup file")
+                var settingsCount = 0
+                var chatCount = 0
+                ZipInputStream(bytes.inputStream()).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        if (!entry.isDirectory) {
+                            val data = zis.readBytes()
+                            val name = entry.name
+                            if (name.startsWith("settings/") && name.endsWith(".json")) {
+                                val ns = name.removePrefix("settings/").removeSuffix(".json")
+                                app.settingsStore.put(
+                                    ns,
+                                    kotlinx.serialization.json.Json.parseToJsonElement(String(data, Charsets.UTF_8)).jsonObject,
+                                )
+                                settingsCount++
+                            } else if (name.startsWith("chats/")) {
+                                val base = name.removePrefix("chats/")
+                                if (!base.contains("..") && !base.contains("/")) {
+                                    val dir = File(app.filesDir, "keepagent/chats")
+                                    dir.mkdirs()
+                                    File(dir, base).writeBytes(data)
+                                    chatCount++
+                                }
+                            } else if (name == "events/stream.jsonl") {
+                                val evDir = File(app.storage.root, "events")
+                                evDir.mkdirs()
+                                File(evDir, "stream.jsonl").writeBytes(data)
+                            }
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+                "settings: $settingsCount · chats: $chatCount"
+            }
+            withContext(Dispatchers.Main) {
+                busy = false
+                notice = res.fold(
+                    { r -> "imported ($r) — restart the app to be safe" },
+                    { e -> "import failed: ${e.message}" },
+                )
+            }
+        }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "backup",
+            fontSize = 10.sp,
+            color = TextPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = if (busy) "working…" else "export",
+            fontSize = 10.sp,
+            color = TextPrimary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(TileStone)
+                .clickable(enabled = !busy) { doExport() }
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = "import",
+            fontSize = 10.sp,
+            color = TextPrimary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(TileStone)
+                .clickable(enabled = !busy) { importPicker.launch(arrayOf("application/zip", "*/*")) }
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        )
+    }
+    notice?.let { n ->
+        Text(
+            text = n,
+            fontSize = 9.sp,
+            color = AmberStatus,
+        )
     }
 }
 

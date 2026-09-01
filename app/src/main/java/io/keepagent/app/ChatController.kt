@@ -221,6 +221,13 @@ class ChatController(private val app: KeepAgentApp) {
         saveSession()
     }
 
+    /** Removes the turns at the given indices (history multi-delete, M1.4h). */
+    fun deleteTurns(indices: Set<Int>) {
+        if (busy || indices.isEmpty()) return
+        _turns.value = _turns.value.filterIndexed { i, _ -> i !in indices }
+        saveSession()
+    }
+
     /** Removes one turn (and everything after it) from the session. */
     fun deleteTurn(index: Int) {
         if (busy) return

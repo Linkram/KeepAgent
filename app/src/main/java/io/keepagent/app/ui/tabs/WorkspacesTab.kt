@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -49,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import io.keepagent.app.Holder
 import io.keepagent.app.git.GitService
 import io.keepagent.app.ui.common.FileOpener
+import io.keepagent.app.ui.common.Recents
 import io.keepagent.core.fs.FileService
 import io.keepagent.core.settings.FileAccess
 import io.keepagent.core.workspace.WorkspaceInfo
@@ -79,6 +81,8 @@ fun WorkspacesTab() {
     var name by remember { mutableStateOf("") }
     var openWs by remember { mutableStateOf<String?>(null) }
     var deleteTarget by remember { mutableStateOf<WorkspaceInfo?>(null) }
+    var renameTarget by remember { mutableStateOf<WorkspaceInfo?>(null) }
+    var renameName by remember { mutableStateOf("") }
 
     val scope = rememberCoroutineScope()
     val active = app.workspaceManager.activeName()
@@ -194,6 +198,10 @@ fun WorkspacesTab() {
                         openWs = ws.name
                     },
                     onDelete = { deleteTarget = ws },
+                    onRename = {
+                        renameTarget = ws
+                        renameName = ws.name
+                    },
                 )
             }
         }
@@ -223,6 +231,45 @@ fun WorkspacesTab() {
             },
         )
     }
+
+    // Rename dialog (M1.4h) — re-points the file tools to the new root.
+    renameTarget?.let { ws ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename workspace", fontSize = 14.sp) },
+            text = {
+                TextField(
+                    value = renameName,
+                    onValueChange = { renameName = it },
+                    placeholder = { Text("new name", fontSize = 12.sp) },
+                    singleLine = true,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = TileStone,
+                        unfocusedContainerColor = TileStone,
+                        focusedIndicatorColor = BevelLight,
+                        unfocusedIndicatorColor = BevelLight,
+                    ),
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val new = app.workspaceManager.rename(ws.name, renameName)
+                    message = if (new != null) "renamed to: $new" else "name unavailable"
+                    renameTarget = null
+                    if (new != null) {
+                        app.fileService.setRoot(app.workspaceManager.activeRoot())
+                        openWs = new
+                    }
+                    scope.launch { refresh() }
+                }) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -231,6 +278,7 @@ private fun WorkspaceRow(
     active: Boolean,
     onSelect: () -> Unit,
     onDelete: () -> Unit,
+    onRename: () -> Unit,
 ) {
     val shape = RoundedCornerShape(8.dp)
     Column(
@@ -275,17 +323,30 @@ private fun WorkspaceRow(
                 color = TextSecondary,
             )
         }
-        if (!active) {
+        Row(
+            modifier = Modifier.padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             Text(
-                text = "delete",
+                text = "rename",
                 fontSize = 11.sp,
-                color = AmberStatus,
+                color = TextPrimary,
                 modifier = Modifier
-                    .padding(top = 2.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .clickable(onClick = onDelete)
+                    .clickable(onClick = onRename)
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             )
+            if (!active) {
+                Text(
+                    text = "delete",
+                    fontSize = 11.sp,
+                    color = AmberStatus,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable(onClick = onDelete)
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
         }
     }
 }
@@ -321,6 +382,10 @@ private fun WorkspaceExplorer(
     var entries by remember { mutableStateOf<List<FileService.DirEntry>?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+
+    // Search + sort + attach (M1.4h).
+    var query by remember { mutableStateOf("") }
+    var sortBy by remember { mutableStateOf("name") } // name | size | date
 
     // Git panel state.
     var gitOpen by remember { mutableStateOf(false) }
@@ -706,12 +771,101 @@ private fun WorkspaceExplorer(
 
         val file = openFile
         if (file != null) {
+            Recents.add(file)
             FileEditor(
                 relPath = file,
                 onBack = { openFile = null },
                 onSaved = { loadDir() },
             )
         } else {
+            // Search + sort row (M1.4h).
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("search files here", fontSize = 12.sp) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = TileStone,
+                        unfocusedContainerColor = TileStone,
+                        focusedIndicatorColor = BevelLight,
+                        unfocusedIndicatorColor = BevelLight,
+                    ),
+                )
+                listOf("name", "size", "date").forEach { s ->
+                    Text(
+                        text = s,
+                        fontSize = 10.sp,
+                        color = if (sortBy == s) TextPrimary else TextSecondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (sortBy == s) TileStoneSelected else Color.Transparent)
+                            .clickable { sortBy = s }
+                            .padding(horizontal = 7.dp, vertical = 4.dp),
+                    )
+                }
+            }
+
+            // Recently opened files (M1.4h).
+            if (dir.isEmpty()) {
+                val rec = Recents.files
+                if (rec.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "recent:",
+                            fontSize = 10.sp,
+                            color = TextSecondary,
+                        )
+                        rec.forEach { p ->
+                            val leaf = p.substringAfterLast('/')
+                            Text(
+                                text = leaf,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = LinkRead,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(TileStone)
+                                    .clickable {
+                                        val slash = p.lastIndexOf('/')
+                                        if (slash >= 0) dir = p.substring(0, slash)
+                                        openFile = p
+                                    }
+                                    .padding(horizontal = 7.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            val shown = remember(entries, query, sortBy) {
+                val list = entries ?: return@remember null
+                val q = query.trim().lowercase()
+                val filtered = if (q.isEmpty()) list
+                else list.filter { it.name.lowercase().contains(q) || it.isDirectory }
+                when (sortBy) {
+                    "size" -> filtered.sortedWith(
+                        compareByDescending<FileService.DirEntry> { it.isDirectory }.thenByDescending { it.sizeBytes },
+                    )
+                    "date" -> filtered.sortedWith(
+                        compareByDescending<FileService.DirEntry> { it.isDirectory }.thenByDescending { it.lastModifiedMillis },
+                    )
+                    else -> filtered
+                }
+            }
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -719,7 +873,7 @@ private fun WorkspaceExplorer(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                val list = entries
+                val list = shown
                 when {
                     list == null -> item(key = "loading") {
                         val err = loadError
@@ -731,7 +885,7 @@ private fun WorkspaceExplorer(
                     }
                     list.isEmpty() -> item(key = "empty") {
                         Text(
-                            text = "(empty folder)",
+                            text = if (query.isNotEmpty()) "(no matches)" else "(empty folder)",
                             fontSize = 12.sp,
                             color = TextSecondary,
                             modifier = Modifier.padding(vertical = 12.dp),
@@ -748,6 +902,13 @@ private fun WorkspaceExplorer(
                                     openFile = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
                                 }
                             },
+                            onAttach = {
+                                val rel = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
+                                app.chatController.attachFile(
+                                    io.keepagent.app.ChatController.AttachedFile(rel, false, ""),
+                                )
+                                notice = "attached $rel to the next message (chat tab)"
+                            },
                         )
                     }
                 }
@@ -757,7 +918,11 @@ private fun WorkspaceExplorer(
 }
 
 @Composable
-private fun ExplorerRow(entry: FileService.DirEntry, onOpen: () -> Unit) {
+private fun ExplorerRow(
+    entry: FileService.DirEntry,
+    onOpen: () -> Unit,
+    onAttach: () -> Unit = {},
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -782,6 +947,15 @@ private fun ExplorerRow(entry: FileService.DirEntry, onOpen: () -> Unit) {
                 fontSize = 10.sp,
                 color = TextSecondary,
             )
+            Text(
+                text = "attach",
+                fontSize = 10.sp,
+                color = LinkRead,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(onClick = onAttach)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
         }
     }
 }
@@ -798,6 +972,14 @@ private fun FileEditor(relPath: String, onBack: () -> Unit, onSaved: () -> Unit)
     var savedText by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
+
+    // Editor upgrades (M1.4h): view mode with line numbers, wrap, find/replace,
+    // revert. Undo in edit mode comes from the on-screen keyboard.
+    var mode by remember { mutableStateOf("edit") } // edit | view
+    var wrap by remember { mutableStateOf(false) }
+    var findOpen by remember { mutableStateOf(false) }
+    var find by remember { mutableStateOf("") }
+    var replaceText by remember { mutableStateOf("") }
 
     /** Hands the file to the system share sheet via FileProvider. */
     fun shareFile() {
@@ -889,29 +1071,176 @@ private fun FileEditor(relPath: String, onBack: () -> Unit, onSaved: () -> Unit)
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp),
             ) {
-                TextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    textStyle = TextStyle(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = TextPrimary,
-                        lineHeight = 14.sp,
-                    ),
+                // Mode / wrap / find / revert toolbar (M1.4h).
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(TileStone)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        disabledContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                    ),
-                )
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    val matchCount =
+                        if (find.isEmpty()) 0 else text.split(find, ignoreCase = true).size - 1
+                    listOf("edit", "view", "wrap", "find", "revert").forEach { chip ->
+                        val active =
+                            when (chip) {
+                                "edit" -> mode == "edit"
+                                "view" -> mode == "view"
+                                "wrap" -> wrap
+                                "find" -> findOpen
+                                else -> false
+                            }
+                        Text(
+                            text = when {
+                                chip == "find" && findOpen && matchCount > 0 -> "$chip · $matchCount"
+                                else -> chip
+                            },
+                            fontSize = 10.sp,
+                            color = if (active) TextPrimary else TextSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (active) TileStoneSelected else Color.Transparent)
+                                .clickable {
+                                    when (chip) {
+                                        "edit" -> mode = "edit"
+                                        "view" -> mode = "view"
+                                        "wrap" -> wrap = !wrap
+                                        "find" -> findOpen = !findOpen
+                                        "revert" -> {
+                                            val st = savedText
+                                            if (st != null) {
+                                                text = st
+                                                status = "reverted to last saved version"
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+                if (findOpen) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        TextField(
+                            value = find,
+                            onValueChange = { find = it },
+                            placeholder = { Text("find", fontSize = 11.sp) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = TileStone,
+                                unfocusedContainerColor = TileStone,
+                                focusedIndicatorColor = BevelLight,
+                                unfocusedIndicatorColor = BevelLight,
+                            ),
+                        )
+                        TextField(
+                            value = replaceText,
+                            onValueChange = { replaceText = it },
+                            placeholder = { Text("replace with", fontSize = 11.sp) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = TileStone,
+                                unfocusedContainerColor = TileStone,
+                                focusedIndicatorColor = BevelLight,
+                                unfocusedIndicatorColor = BevelLight,
+                            ),
+                        )
+                        Text(
+                            text = "replace all",
+                            fontSize = 10.sp,
+                            color = TextPrimary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(TileStoneSelected)
+                                .clickable {
+                                    val f = find
+                                    if (f.isNotEmpty()) {
+                                        val n = text.split(f, ignoreCase = true).size - 1
+                                        text = text.replace(f, replaceText, ignoreCase = true)
+                                        status = "replaced $n occurrence(s)"
+                                    }
+                                }
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+                if (mode == "view") {
+                    // Numbered, read-only view with find highlighting (M1.4h).
+                    val lines = remember(text) { text.split("\n") }
+                    val f = find
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TileStone)
+                            .padding(horizontal = 4.dp, vertical = 4.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        lines.forEachIndexed { i, line ->
+                            val hit = f.isNotEmpty() && line.contains(f, ignoreCase = true)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        if (hit) AmberStatus.copy(alpha = 0.18f)
+                                        else Color.Transparent,
+                                    )
+                                    .padding(horizontal = 4.dp, vertical = 1.dp),
+                            ) {
+                                Text(
+                                    text = "${i + 1}",
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (hit) AmberStatus else TextSecondary,
+                                    modifier = Modifier.width(34.dp),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = line,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = TextPrimary,
+                                    softWrap = wrap,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    TextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        textStyle = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = TextPrimary,
+                            lineHeight = 14.sp,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TileStone)
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            disabledContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                        ),
+                    )
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
