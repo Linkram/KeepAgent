@@ -41,6 +41,8 @@ class KeepAgentApp : Application() {
         private set
     lateinit var eventBus: EventBus
         private set
+    lateinit var eventLog: EventLog
+        private set
     lateinit var workspaceManager: WorkspaceManager
         private set
     lateinit var fileService: FileService
@@ -60,7 +62,8 @@ class KeepAgentApp : Application() {
 
         storage = Storage(this)
         settingsStore = SettingsStore(this)
-        eventBus = EventBus(EventLog(storage.eventsFile))
+        eventLog = EventLog(storage.eventsFile)
+        eventBus = EventBus(eventLog)
         workspaceManager = WorkspaceManager(storage, settingsStore, eventBus)
         fileService = FileService(
             root = workspaceManager.activeRoot(),

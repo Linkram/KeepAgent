@@ -23,6 +23,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,12 +45,14 @@ import io.keepagent.app.ApiConnection
 import io.keepagent.app.Holder
 import io.keepagent.app.R
 import io.keepagent.app.ui.theme.AmberStatus
+import io.keepagent.app.ui.theme.BevelLight
 import io.keepagent.app.ui.theme.LinkRead
 import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
 import io.keepagent.app.ui.theme.TileStone
 import io.keepagent.app.ui.theme.UserBubble
 import io.keepagent.core.llm.OpenAiCompatibleClient
+import io.keepagent.core.settings.SettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -114,6 +117,8 @@ fun ConnectionsTab() {
                 Text("Add connection")
             }
         }
+
+        GeneralSection(app.settingsStore)
 
         if (list.isEmpty()) {
             Box(
@@ -478,6 +483,140 @@ private fun ConnectionDialog(
             }
         },
     )
+}
+
+/**
+ * General settings (M1.4), surfaced on the Connections tab. Values go to
+ * the shared SettingsStore — the provider addon, chat input bar and the
+ * context gauge read the same keys.
+ */
+@Composable
+private fun GeneralSection(store: SettingsStore) {
+    var open by remember { mutableStateOf(false) }
+    val sendOnEnter = store.getString(SettingsStore.NS_GENERAL, "sendOnEnter") == "true"
+    val verbose = store.getString(SettingsStore.NS_GENERAL, "llmLogVerbose") == "true"
+    val maxRetries = store.getString(SettingsStore.NS_MODEL, "maxRetries") ?: "1"
+    val timeoutSec = store.getString(SettingsStore.NS_MODEL, "timeoutSeconds") ?: "600"
+    val contextLimit = store.getString(SettingsStore.NS_MODEL, "contextLimit") ?: "128000"
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .clickable { open = !open }
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = if (open) "▾" else "▸", fontSize = 10.sp, color = TextSecondary)
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(text = "general", fontSize = 11.sp, color = TextSecondary)
+    }
+
+    if (open) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ToggleRow(
+                label = "send on enter (default: line break)",
+                on = sendOnEnter,
+                onToggle = {
+                    store.setString(
+                        SettingsStore.NS_GENERAL,
+                        "sendOnEnter",
+                        if (sendOnEnter) "false" else "true",
+                    )
+                },
+            )
+            ToggleRow(
+                label = "verbose LLM log (console tab)",
+                on = verbose,
+                onToggle = {
+                    store.setString(
+                        SettingsStore.NS_GENERAL,
+                        "llmLogVerbose",
+                        if (verbose) "false" else "true",
+                    )
+                },
+            )
+            NumberRow(
+                label = "max retries (0–5)",
+                value = maxRetries,
+                onCommit = { store.setString(SettingsStore.NS_MODEL, "maxRetries", it) },
+            )
+            NumberRow(
+                label = "request timeout s (30–3600)",
+                value = timeoutSec,
+                onCommit = { store.setString(SettingsStore.NS_MODEL, "timeoutSeconds", it) },
+            )
+            NumberRow(
+                label = "context limit tokens",
+                value = contextLimit,
+                onCommit = { store.setString(SettingsStore.NS_MODEL, "contextLimit", it) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(label: String, on: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            color = TextPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = if (on) "on" else "off",
+            fontSize = 10.sp,
+            color = if (on) UserBubble else TextSecondary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 10.dp, vertical = 3.dp),
+        )
+    }
+}
+
+@Composable
+private fun NumberRow(label: String, value: String, onCommit: (String) -> Unit) {
+    var text by remember { mutableStateOf(value) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            color = TextPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        TextField(
+            value = text,
+            onValueChange = {
+                val digits = it.filter { c -> c.isDigit() }
+                text = digits
+                if (digits.isNotEmpty()) onCommit(digits)
+            },
+            singleLine = true,
+            modifier = Modifier
+                .width(90.dp)
+                .height(34.dp),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = TileStone,
+                unfocusedContainerColor = TileStone,
+                focusedIndicatorColor = BevelLight,
+                unfocusedIndicatorColor = BevelLight,
+            ),
+        )
+    }
 }
 
 /** Fetches model IDs from `GET /models` without touching the model profile. */

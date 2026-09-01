@@ -127,7 +127,7 @@ fun KeepAgentShell() {
                 0 -> ChatTab(onOpenFileInWorkspaces = { selected = 2 })
                 1 -> TestTab(onGotoChat = { selected = 0 })
                 2 -> WorkspacesTab()
-                3 -> ConsoleTab(app.eventBus)
+                3 -> ConsoleTab(app.eventBus, app.eventLog)
                 4 -> AddonsTab(app.addonManager, app.eventBus)
                 else -> ConnectionsTab()
             }

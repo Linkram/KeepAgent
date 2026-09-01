@@ -1,6 +1,7 @@
 package io.keepagent.app.ui.tabs
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
@@ -60,14 +62,14 @@ fun AddonsTab(manager: AddonManager, eventBus: EventBus) {
         }
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp)) {
             items(records, key = { it.dirName }) { record ->
-                AddonCard(record)
+                AddonCard(record, manager)
             }
         }
     }
 }
 
 @Composable
-private fun AddonCard(record: AddonRecord) {
+private fun AddonCard(record: AddonRecord, manager: AddonManager) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -89,6 +91,33 @@ private fun AddonCard(record: AddonRecord) {
                 )
             }
             StatusChip(record.status)
+        }
+        // Enable/disable toggle (M1.4): disabled add-ons stay listed but are
+        // not initialized, so their tools are not registered.
+        if (record.status != AddonStatus.INVALID && record.status != AddonStatus.UNAVAILABLE) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val enabledNow = record.status != AddonStatus.DISABLED
+                Text(
+                    text = if (enabledNow) "enabled" else "disabled",
+                    fontSize = 10.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = { manager.setAddonEnabled(record.id, !enabledNow) },
+                ) {
+                    Text(
+                        text = if (enabledNow) "Disable" else "Enable",
+                        fontSize = 11.sp,
+                    )
+                }
+            }
         }
         record.statusDetail?.let {
             Text(
@@ -131,6 +160,7 @@ private fun StatusChip(status: AddonStatus) {
         AddonStatus.VALID -> "valid" to Color(0xFFE0B84C)
         AddonStatus.INVALID, AddonStatus.FAILED -> "failed" to Color(0xFFE57373)
         AddonStatus.UNAVAILABLE -> "unavailable" to Color(0xFFE57373)
+        AddonStatus.DISABLED -> "disabled" to TextSecondary
         else -> "discovered" to TextSecondary
     }
     Text(label.uppercase(), fontSize = 10.sp, color = color, fontWeight = FontWeight.SemiBold)
