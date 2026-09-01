@@ -19,6 +19,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -29,16 +30,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.app.Holder
+import io.keepagent.core.fs.FileService
 import io.keepagent.core.settings.FileAccess
 import io.keepagent.core.workspace.WorkspaceInfo
 import io.keepagent.core.workspace.WorkspaceManager
 import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BevelLight
+import io.keepagent.app.ui.theme.LinkRead
 import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
 import io.keepagent.app.ui.theme.TileStone
@@ -57,6 +62,7 @@ fun WorkspacesTab() {
     var list by remember { mutableStateOf<List<WorkspaceInfo>>(emptyList()) }
     var message by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
+    var openWs by remember { mutableStateOf<String?>(null) }
 
     val scope = rememberCoroutineScope()
     val active = app.workspaceManager.activeName()
@@ -73,6 +79,14 @@ fun WorkspacesTab() {
 
     LaunchedEffect(Unit) { refresh() }
 
+    // Tapping a workspace makes it active (file tools re-point to its root)
+    // and opens the file browser for it.
+    val open = openWs
+    if (open != null) {
+        WorkspaceExplorer(wsName = open, onBack = { openWs = null })
+        return
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -82,7 +96,7 @@ fun WorkspacesTab() {
         ) {
             Text("Workspaces", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
             Text(
-                text = "File tools run against the active workspace. " +
+                text = "File tools run against the active workspace. Tap a workspace to browse, view, and edit its files. " +
                     "File access: ${fileAccess.name.lowercase()} " +
                     "(Workspace = confined to root; Full = whole storage).",
                 fontSize = 11.sp,
@@ -148,6 +162,7 @@ fun WorkspacesTab() {
                             app.fileService.setRoot(app.workspaceManager.activeRoot())
                             scope.launch { refresh() }
                         }
+                        openWs = ws.name
                     },
                     onDelete = {
                         if (ws.name != active) {
@@ -231,4 +246,291 @@ private fun formatSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     bytes < 1024L * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
     else -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+}
+
+// -- file browser (M1.2, F-007 extension) ------------------------------------
+
+/**
+ * File browser for one workspace: folder tree, file viewing, and manual
+ * editing. Paths are relative to the workspace root; [FileService] enforces
+ * the access mode.
+ */
+@Composable
+private fun WorkspaceExplorer(wsName: String, onBack: () -> Unit) {
+    val app = Holder.app
+    val fs = app.fileService
+    val scope = rememberCoroutineScope()
+
+    var dir by remember { mutableStateOf("") }
+    var openFile by remember { mutableStateOf<String?>(null) }
+    var entries by remember { mutableStateOf<List<FileService.DirEntry>?>(null) }
+
+    fun loadDir() {
+        val p = dir
+        entries = null
+        scope.launch {
+            entries = withContext(Dispatchers.IO) { fs.browse(p) }
+        }
+    }
+
+    LaunchedEffect(dir) { loadDir() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                text = "← workspaces",
+                fontSize = 12.sp,
+                color = LinkRead,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(onClick = onBack)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = wsName,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary,
+                )
+                val parts = dir.split("/").filter { it.isNotEmpty() }
+                if (parts.isEmpty()) {
+                    Text(
+                        text = "  (root)",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = TextSecondary,
+                    )
+                } else {
+                    parts.forEachIndexed { i, part ->
+                        Text(
+                            text = "/$part",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (i == parts.size - 1) TextPrimary else TextSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable {
+                                    dir = parts.take(i + 1).joinToString("/")
+                                    openFile = null
+                                }
+                                .padding(horizontal = 4.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        val file = openFile
+        if (file != null) {
+            FileEditor(
+                relPath = file,
+                onBack = { openFile = null },
+                onSaved = { loadDir() },
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val list = entries
+                when {
+                    list == null -> item(key = "loading") {
+                        Text("loading…", fontSize = 12.sp, color = TextSecondary)
+                    }
+                    list.isEmpty() -> item(key = "empty") {
+                        Text(
+                            text = "(empty folder)",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(vertical = 12.dp),
+                        )
+                    }
+                    else -> items(list, key = { it.name }) { entry ->
+                        ExplorerRow(
+                            entry = entry,
+                            onOpen = {
+                                if (entry.isDirectory) {
+                                    dir = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
+                                    openFile = null
+                                } else {
+                                    openFile = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExplorerRow(entry: FileService.DirEntry, onOpen: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(TileStone)
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = if (entry.isDirectory) entry.name + "/" else entry.name,
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace,
+            color = if (entry.isDirectory) TextPrimary else TextSecondary,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+        )
+        if (!entry.isDirectory) {
+            Text(
+                text = formatSize(entry.sizeBytes),
+                fontSize = 10.sp,
+                color = TextSecondary,
+            )
+        }
+    }
+}
+
+/** Text viewer/editor for one workspace file. */
+@Composable
+private fun FileEditor(relPath: String, onBack: () -> Unit, onSaved: () -> Unit) {
+    val app = Holder.app
+    val fs = app.fileService
+    val scope = rememberCoroutineScope()
+
+    var text by remember { mutableStateOf("") }
+    var savedText by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var status by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(relPath) {
+        val r = withContext(Dispatchers.IO) { fs.read(relPath, 1_000_000) }
+        if (r.ok) {
+            text = r.text
+            savedText = r.text
+            error = null
+            status = null
+        } else {
+            error = r.error
+            text = ""
+            savedText = null
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                text = "← files",
+                fontSize = 12.sp,
+                color = LinkRead,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(onClick = onBack)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            SelectionContainer {
+                Text(
+                    text = relPath,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = TextPrimary,
+                    maxLines = 1,
+                )
+            }
+            status?.let {
+                Text(text = it, fontSize = 10.sp, color = AmberStatus)
+            }
+        }
+        val err = error
+        if (err != null) {
+            Text(
+                text = err,
+                fontSize = 12.sp,
+                color = AmberStatus,
+                modifier = Modifier.padding(14.dp),
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+            ) {
+                TextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    textStyle = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = TextPrimary,
+                        lineHeight = 14.sp,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TileStone)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                    ),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val dirty = savedText != null && text != savedText
+                    if (dirty) {
+                        Text(
+                            text = "unsaved changes",
+                            fontSize = 10.sp,
+                            color = AmberStatus,
+                            modifier = Modifier.padding(end = 10.dp),
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val r = withContext(Dispatchers.IO) { fs.write(relPath, text) }
+                                if (r.ok) {
+                                    savedText = text
+                                    status = "saved — ${r.text}"
+                                    onSaved()
+                                } else {
+                                    status = "save failed: ${r.error}"
+                                }
+                            }
+                        },
+                        enabled = dirty,
+                    ) {
+                        Text("Save")
+                    }
+                }
+            }
+        }
+    }
 }

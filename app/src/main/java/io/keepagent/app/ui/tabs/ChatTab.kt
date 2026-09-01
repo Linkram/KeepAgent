@@ -1,5 +1,8 @@
 package io.keepagent.app.ui.tabs
 
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -41,11 +44,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.keepagent.addonsapi.llm.ImagePart
 import io.keepagent.app.Holder
 import io.keepagent.app.R
 import io.keepagent.core.agent.AgentRun
@@ -65,6 +71,8 @@ import io.keepagent.app.ui.theme.TextSecondary
 import io.keepagent.app.ui.theme.TileStone
 import io.keepagent.app.ui.theme.UserBubble
 import io.keepagent.app.ui.theme.UserBubbleText
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Chat tab (M1, F-001/F-003/F-004): streaming chat with thinking blocks,
@@ -81,7 +89,7 @@ fun ChatTab() {
     val pendingApproval by app.approvalGate.pending.collectAsState()
 
     var input by remember { mutableStateOf("") }
-    var showConfig by remember { mutableStateOf(false) }
+    val pendingImages by controller.pendingImages.collectAsState()
 
     val baseUrl = app.settingsStore.getString(SettingsStore.NS_MODEL, "baseUrl")
     val modelId = app.currentModelId()
@@ -100,7 +108,6 @@ fun ChatTab() {
                 app.connections.syncActiveFromProfile()
             },
             onRetryModels = { controller.refreshModels(force = true) },
-            onConfigure = { showConfig = true },
             approvalMode = ApprovalMode.from(
                 app.settingsStore.getString(SettingsStore.NS_GENERAL, "approvalMode"),
             ),
@@ -128,7 +135,7 @@ fun ChatTab() {
                 item(key = "empty") {
                     Text(
                         text = if (modelId == null)
-                            "Configure the model first — tap the settings icon above."
+                            "No model selected — add an endpoint in the Connections tab, then pick a model in the chip above."
                         else
                             "Describe what to build. The agent can read, write, and search files in the workspace.",
                         fontSize = 12.sp,
@@ -139,7 +146,7 @@ fun ChatTab() {
             }
             items(turns, key = { it.run.id }) { turn ->
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    UserBubble(turn.userText)
+                    UserBubble(turn.userText, turn.images)
                     RunView(turn.run)
                 }
             }
@@ -158,28 +165,8 @@ fun ChatTab() {
                 controller.send(input)
                 input = ""
             },
-        )
-    }
-
-    if (showConfig) {
-        val activeConn = app.connections.active()
-        ModelConfigDialog(
-            title = activeConn?.let { "Model profile — ${it.name}" } ?: "Model profile",
-            baseUrl = app.settingsStore.getString(SettingsStore.NS_MODEL, "baseUrl") ?: "",
-            apiKey = app.settingsStore.getString(SettingsStore.NS_MODEL, "apiKey") ?: "",
-            model = modelId ?: "",
-            onSave = { b, k, m ->
-                app.settingsStore.setString(SettingsStore.NS_MODEL, "baseUrl", b.trim())
-                app.settingsStore.setString(SettingsStore.NS_MODEL, "apiKey", k.trim())
-                app.settingsStore.setString(SettingsStore.NS_MODEL, "model", m.trim())
-                // Keep the active connection record in step with the profile.
-                if (activeConn != null) {
-                    app.connections.update(
-                        activeConn.copy(baseUrl = b.trim(), apiKey = k.trim(), model = m.trim()),
-                    )
-                }
-            },
-            onDismiss = { showConfig = false },
+            pendingImages = pendingImages,
+            onRemoveImage = controller::removePendingImage,
         )
     }
 }
@@ -194,7 +181,6 @@ private fun ChatHeader(
     modelsError: String?,
     onModelSelected: (String) -> Unit,
     onRetryModels: () -> Unit,
-    onConfigure: () -> Unit,
     approvalMode: ApprovalMode,
     onApprovalMode: (ApprovalMode) -> Unit,
     fileAccess: FileAccess,
@@ -225,17 +211,6 @@ private fun ChatHeader(
                 onFileAccess(FileAccess.entries.first { it.name.lowercase() == s })
             },
         )
-        Spacer(modifier = Modifier.width(4.dp))
-        IconButton(onClick = onConfigure, modifier = Modifier.padding(2.dp)) {
-            Icon(
-                painter = painterResource(R.drawable.ic_gear),
-                contentDescription = "Model profile",
-                tint = TextSecondary,
-                modifier = Modifier
-                    .width(16.dp)
-                    .height(16.dp),
-            )
-        }
     }
 }
 
@@ -249,40 +224,89 @@ private fun ModelChip(
     onRetry: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
+    var typing by remember { mutableStateOf(false) }
+    var typed by remember { mutableStateOf("") }
     Box {
-        Chip(text = "model: $modelLabel", onClick = { open = true })
+        Chip(
+            text = "model: $modelLabel",
+            onClick = {
+                typing = false
+                typed = currentModel ?: ""
+                open = true
+            },
+        )
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (models.isEmpty()) {
-                DropdownMenuItem(
-                    text = {
-                        Text(modelsError ?: "no models (tap settings to configure)", fontSize = 12.sp)
-                    },
-                    onClick = {},
-                )
-                if (modelsError != null) {
-                    DropdownMenuItem(
-                        text = { Text("Retry fetch", fontSize = 12.sp) },
-                        onClick = {
-                            onRetry()
-                            open = false
-                        },
-                    )
+            // The endpoint's full list from the active connection's /models;
+            // the configured model stays selectable even when the fetch
+            // failed or the endpoint doesn't list it.
+            val knownIds = models.map { it.id }
+            val entries = buildList<Pair<String, String>> {
+                if (currentModel != null && currentModel !in knownIds) {
+                    add(currentModel!! to currentModel!!)
                 }
+                addAll(models.map { it.name to it.id })
             }
-            // The endpoint's full list; when it is empty (fetch failed or the
-            // endpoint has no /models), the configured model stays selectable.
-            val selectable = models.ifEmpty {
-                currentModel?.let { listOf(io.keepagent.addonsapi.llm.LlmModel(id = it, name = it)) }
-                    ?: emptyList()
-            }
-            selectable.forEach { m ->
+            entries.forEach { (label, id) ->
                 DropdownMenuItem(
-                    text = { Text(m.name, fontSize = 12.sp) },
+                    text = { Text(label, fontSize = 12.sp) },
                     onClick = {
-                        onModelSelected(m.id)
+                        onModelSelected(id)
                         open = false
                     },
                 )
+            }
+            if (modelsError != null) {
+                DropdownMenuItem(
+                    text = { Text(modelsError, fontSize = 11.sp, color = LinkRead) },
+                    onClick = {},
+                )
+                DropdownMenuItem(
+                    text = { Text("Retry fetch", fontSize = 12.sp) },
+                    onClick = {
+                        onRetry()
+                        open = false
+                    },
+                )
+            }
+            if (models.isEmpty()) {
+                if (!typing) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "Model ID not listed — type it",
+                                fontSize = 12.sp,
+                                color = TextSecondary,
+                            )
+                        },
+                        onClick = { typing = true },
+                    )
+                } else {
+                    DropdownMenuItem(
+                        text = {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                TextField(
+                                    value = typed,
+                                    onValueChange = { typed = it },
+                                    label = { Text("model ID", fontSize = 10.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.width(200.dp),
+                                )
+                                TextButton(
+                                    onClick = {
+                                        val v = typed.trim()
+                                        if (v.isNotBlank()) {
+                                            onModelSelected(v)
+                                            open = false
+                                        }
+                                    },
+                                ) {
+                                    Text("set", fontSize = 11.sp)
+                                }
+                            }
+                        },
+                        onClick = {},
+                    )
+                }
             }
         }
     }
@@ -356,7 +380,7 @@ private fun RunView(run: AgentRun) {
 }
 
 @Composable
-private fun UserBubble(text: String) {
+private fun UserBubble(text: String, images: List<ImagePart>) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Box(
             modifier = Modifier
@@ -364,8 +388,39 @@ private fun UserBubble(text: String) {
                 .background(UserBubble)
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                images.forEach { part ->
+                    ImagePartView(part, Modifier.height(72.dp))
+                }
+            }
         }
+    }
+}
+
+/** A decoded image attachment (e.g. a Test-tab screenshot) inside a message. */
+@Composable
+private fun ImagePartView(part: ImagePart, modifier: Modifier = Modifier) {
+    var bitmap by remember(part.dataBase64) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(part.dataBase64) {
+        bitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = Base64.decode(part.dataBase64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    val bmp = bitmap
+    if (bmp != null) {
+        Image(
+            bitmap = bmp,
+            contentDescription = "image attachment",
+            modifier = modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp)),
+        )
+    } else {
+        Text("… decoding image", fontSize = 10.sp, color = TextSecondary)
     }
 }
 
@@ -472,80 +527,87 @@ private fun ApprovalCard(request: ApprovalRequest, onDecide: (Boolean) -> Unit) 
 // -- input + settings --------------------------------------------------------
 
 @Composable
-private fun InputBar(value: String, onValueChange: (String) -> Unit, enabled: Boolean, onSend: () -> Unit) {
-    Row(
+private fun InputBar(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    onSend: () -> Unit,
+    pendingImages: List<ImagePart>,
+    onRemoveImage: (Int) -> Unit,
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(TileStone)
-            .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        TextField(
-            value = value,
-            onValueChange = onValueChange,
-            enabled = enabled,
-            placeholder = { Text("Type anything here…", fontSize = 14.sp) },
-            modifier = Modifier.weight(1f),
-            colors = androidx.compose.material3.TextFieldDefaults.colors(
-                focusedContainerColor = TileStone,
-                unfocusedContainerColor = TileStone,
-                disabledContainerColor = TileStone,
-                focusedIndicatorColor = BevelLight,
-                unfocusedIndicatorColor = BevelLight,
-            ),
-        )
-        Button(onClick = onSend, enabled = enabled && value.isNotBlank()) {
-            Text("Send")
+        if (pendingImages.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "${pendingImages.size} attached:",
+                    fontSize = 10.sp,
+                    color = TextSecondary,
+                )
+                pendingImages.forEachIndexed { index, part ->
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(TileStone)
+                            .border(
+                                width = 1.dp,
+                                color = BevelLight,
+                                shape = RoundedCornerShape(6.dp),
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ImagePartView(part, Modifier.height(28.dp))
+                        IconButton(
+                            onClick = { onRemoveImage(index) },
+                            modifier = Modifier.size(26.dp),
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_delete),
+                                contentDescription = "remove attachment",
+                                tint = AmberStatus,
+                                modifier = Modifier.size(11.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(TileStone)
+                .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextField(
+                value = value,
+                onValueChange = onValueChange,
+                enabled = enabled,
+                placeholder = { Text("Type anything here…", fontSize = 14.sp) },
+                modifier = Modifier.weight(1f),
+                colors = androidx.compose.material3.TextFieldDefaults.colors(
+                    focusedContainerColor = TileStone,
+                    unfocusedContainerColor = TileStone,
+                    disabledContainerColor = TileStone,
+                    focusedIndicatorColor = BevelLight,
+                    unfocusedIndicatorColor = BevelLight,
+                ),
+            )
+            Button(onClick = onSend, enabled = enabled && value.isNotBlank()) {
+                Text("Send")
+            }
         }
     }
 }
 
-@Composable
-private fun ModelConfigDialog(
-    title: String,
-    baseUrl: String,
-    apiKey: String,
-    model: String,
-    onSave: (String, String, String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var b by remember { mutableStateOf(baseUrl) }
-    var k by remember { mutableStateOf(apiKey) }
-    var m by remember { mutableStateOf(model) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextField(
-                    value = b,
-                    onValueChange = { b = it },
-                    label = { Text("Base URL") },
-                    placeholder = { Text("https://api.example.com/v1") },
-                    singleLine = true,
-                )
-                TextField(
-                    value = k,
-                    onValueChange = { k = it },
-                    label = { Text("API key") },
-                    singleLine = true,
-                )
-                TextField(
-                    value = m,
-                    onValueChange = { m = it },
-                    label = { Text("Model") },
-                    placeholder = { Text("e.g. qwen3-8b") },
-                    singleLine = true,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(b, k, m); onDismiss() }) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
-}
+

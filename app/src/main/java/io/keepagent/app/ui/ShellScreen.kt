@@ -111,7 +111,7 @@ fun KeepAgentShell() {
             CastleWallBackground(modifier = Modifier.fillMaxSize())
             when (selected) {
                 0 -> ChatTab()
-                1 -> TestTab()
+                1 -> TestTab(onGotoChat = { selected = 0 })
                 2 -> WorkspacesTab()
                 3 -> ConsoleTab(app.eventBus)
                 4 -> AddonsTab(app.addonManager, app.eventBus)

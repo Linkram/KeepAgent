@@ -1,5 +1,6 @@
 package io.keepagent.app
 
+import io.keepagent.addonsapi.llm.ImagePart
 import io.keepagent.addonsapi.llm.LlmModel
 import io.keepagent.core.agent.AgentRun
 import io.keepagent.core.events.EventKind
@@ -18,7 +19,7 @@ import kotlinx.coroutines.launch
 class ChatController(private val app: KeepAgentApp) {
 
     /** One user message + its agent run (streaming state included). */
-    data class Turn(val userText: String, val run: AgentRun)
+    data class Turn(val userText: String, val images: List<ImagePart>, val run: AgentRun)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -30,6 +31,18 @@ class ChatController(private val app: KeepAgentApp) {
 
     private val _modelsError = MutableStateFlow<String?>(null)
     val modelsError: StateFlow<String?> = _modelsError.asStateFlow()
+
+    /** Images waiting to ride the next user message (e.g. Test-tab screenshots). */
+    private val _pendingImages = MutableStateFlow<List<ImagePart>>(emptyList())
+    val pendingImages: StateFlow<List<ImagePart>> = _pendingImages.asStateFlow()
+
+    fun attachImage(part: ImagePart) {
+        _pendingImages.value = _pendingImages.value + part
+    }
+
+    fun removePendingImage(index: Int) {
+        _pendingImages.value = _pendingImages.value.filterIndexed { i, _ -> i != index }
+    }
 
     @Volatile
     private var modelsLoaded = false
@@ -45,9 +58,12 @@ class ChatController(private val app: KeepAgentApp) {
             app.eventBus.emit(EventKind.ERROR, "chat", "chat unavailable: model not configured (base URL + model)")
             return
         }
-        val turn = Turn(trimmed, AgentRun())
+        // Pending attachments (screenshots) ride this message.
+        val images = _pendingImages.value
+        _pendingImages.value = emptyList()
+        val turn = Turn(trimmed, images, AgentRun())
         _turns.value = _turns.value + turn
-        scope.launch(Dispatchers.Default) { agent.runTurn(turn.run, trimmed) }
+        scope.launch(Dispatchers.Default) { agent.runTurn(turn.run, trimmed, images) }
     }
 
     fun decideApproval(allow: Boolean) = app.approvalGate.decide(allow)

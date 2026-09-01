@@ -219,6 +219,26 @@ class FileService(
         )
     }
 
+    /** One entry in a directory listing, for the UI file browser. */
+    data class DirEntry(
+        val name: String,
+        val isDirectory: Boolean,
+        val sizeBytes: Long,
+    )
+
+    /**
+     * Typed directory listing for the Workspaces tab file browser.
+     * Returns null when the path is blocked or not a directory.
+     */
+    fun browse(path: String = "."): List<DirEntry>? {
+        val f = resolve(path) ?: return null
+        if (!f.exists() || !f.isDirectory) return null
+        return f.listFiles()
+            ?.sortedWith(compareByDescending<File> { it.isDirectory }.thenBy { it.name.lowercase() })
+            ?.map { DirEntry(it.name, it.isDirectory, if (it.isDirectory) 0L else it.length()) }
+            ?: emptyList()
+    }
+
     /** Lists a directory (for the Workspaces tab browser). */
     fun listDir(path: String = "."): Result {
         val f = resolve(path) ?: return Result.fail("outside workspace (file access = workspace)")

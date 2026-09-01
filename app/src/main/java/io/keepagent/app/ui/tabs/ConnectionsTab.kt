@@ -309,6 +309,9 @@ private fun ConnectionDialog(
     var apiKey by remember { mutableStateOf(existing?.apiKey ?: "") }
     var model by remember { mutableStateOf(existing?.model ?: "") }
     var testResult by remember { mutableStateOf<String?>(null) }
+    var fetchingModels by remember { mutableStateOf(false) }
+    var fetchedModels by remember { mutableStateOf<List<String>?>(null) }
+    var fetchError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val canSave = name.isNotBlank() && baseUrl.isNotBlank()
     AlertDialog(
@@ -381,6 +384,74 @@ private fun ConnectionDialog(
                     placeholder = { Text("e.g. openai/gpt-4o-mini") },
                     singleLine = true,
                 )
+                TextButton(
+                    onClick = {
+                        fetchingModels = true
+                        fetchError = null
+                        fetchedModels = null
+                        scope.launch {
+                            val r = runCatching {
+                                fetchModelIds(baseUrl.trim(), apiKey.trim())
+                            }
+                            if (r.isSuccess) {
+                                fetchedModels = r.getOrThrow()
+                            } else {
+                                fetchError = r.exceptionOrNull()?.message ?: "fetch failed"
+                            }
+                            fetchingModels = false
+                        }
+                    },
+                    enabled = baseUrl.isNotBlank() && !fetchingModels,
+                ) {
+                    Text(
+                        text = if (fetchingModels) "fetching…" else "Fetch models for this endpoint",
+                        fontSize = 11.sp,
+                    )
+                }
+                val ferr = fetchError
+                if (ferr != null) {
+                    Text(
+                        text = ferr,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = LinkRead,
+                        maxLines = 2,
+                    )
+                }
+                val fms = fetchedModels
+                if (fms != null) {
+                    if (fms.isEmpty()) {
+                        Text(
+                            text = "endpoint reported no models — type the model ID in the field above",
+                            fontSize = 10.sp,
+                            color = TextSecondary,
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            fms.take(30).forEach { id ->
+                                Text(
+                                    text = id,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (id == model) UserBubble else TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable { model = id }
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                )
+                            }
+                            if (fms.size > 30) {
+                                Text(
+                                    text = "… ${fms.size - 30} more — type the exact ID in the field above",
+                                    fontSize = 9.sp,
+                                    color = TextSecondary,
+                                )
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -409,19 +480,11 @@ private fun ConnectionDialog(
     )
 }
 
-/**
- * Connection probe: `GET /models` against the given endpoint with the given
- * key, without touching the model profile. Returns a short human-readable
- * result string ("OK — N models" or "failed: …").
- */
-private suspend fun probeEndpoint(baseUrl: String, apiKey: String): String {
+/** Fetches model IDs from `GET /models` without touching the model profile. */
+private suspend fun fetchModelIds(baseUrl: String, apiKey: String): List<String> {
     val client = OpenAiCompatibleClient(baseUrl, apiKey)
     return try {
-        withContext(Dispatchers.IO) {
-            runCatching { client.fetchModels() }
-                .map { "OK — ${it.size} models" }
-                .getOrElse { "failed: ${it.message ?: it.javaClass.simpleName}" }
-        }
+        withContext(Dispatchers.IO) { client.fetchModels().map { it.id } }
     } finally {
         try {
             client.close()
@@ -429,3 +492,13 @@ private suspend fun probeEndpoint(baseUrl: String, apiKey: String): String {
         }
     }
 }
+
+/**
+ * Connection probe: `GET /models` against the given endpoint with the given
+ * key, without touching the model profile. Returns a short human-readable
+ * result string ("OK — N models" or "failed: …").
+ */
+private suspend fun probeEndpoint(baseUrl: String, apiKey: String): String =
+    runCatching { fetchModelIds(baseUrl, apiKey) }
+        .map { "OK — ${it.size} models" }
+        .getOrElse { "failed: ${it.message ?: it.javaClass.simpleName}" }

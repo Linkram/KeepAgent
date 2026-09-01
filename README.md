@@ -129,6 +129,22 @@ Settings keys (namespaced JSON in `SettingsStore`):
   tool invocations, model errors — flows through it.
 - **hello-tool sample add-on**: seeded from assets into the on-device addons
   dir on first run; registers the `hello` tool.
+- **Model selection (M1.2)**: the chat header is a model chip only — no
+  endpoint fields in chat; endpoints live in Connections. The dropdown lists
+  the active connection's `/models` (the configured model stays selectable,
+  **Retry fetch** on failure, and a type-it fallback as a last resort). The
+  Connections dialog's **Fetch models** fills the Model field from the same
+  list.
+- **Test tab (M1.2)**: a local browser (WebView) renders workspace HTML —
+  path field, the workspace's `.html` files as one-tap chips, Load.
+  **Send screenshot to agent** captures the on-screen page via `PixelCopy`,
+  attaches the PNG to the next chat message, and opens Chat.
+- **Workspace file browser (M1.2)**: tapping a workspace (which makes it
+  active) opens a folder tree with file sizes and clickable breadcrumbs, and
+  a text viewer/editor with Save for generated files.
+- **Images in chat (M1.2)**: attached screenshots render as thumbnails in
+  the user bubble and the input bar, and ride to the model as data-URL image
+  parts.
 
 ## Module map
 
