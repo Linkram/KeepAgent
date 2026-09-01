@@ -8,6 +8,8 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.view.PixelCopy
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,8 +22,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
@@ -87,6 +92,9 @@ fun TestTab(onGotoChat: () -> Unit) {
     var fullscreen by remember { mutableStateOf(false) }
     var landscape by remember { mutableStateOf(false) }
     var webViewRef = remember { mutableStateOf<WebView?>(null) }
+    var lastShot = remember { mutableStateOf<Bitmap?>(null) }
+    var consoleLines by remember { mutableStateOf<List<String>>(emptyList()) }
+    var consoleOpen by remember { mutableStateOf(false) }
 
     fun setLandscape(on: Boolean) {
         landscape = on
@@ -139,6 +147,36 @@ fun TestTab(onGotoChat: () -> Unit) {
         }
     }
 
+    /** Writes the captured console tail to reports/ and attaches it to Chat (main thread, small file). */
+    fun attachConsoleToChat() {
+        if (consoleLines.isEmpty()) return
+        runCatching {
+            val dir = File(fs.root, "reports")
+            dir.mkdirs()
+            val f = File(dir, "console-${System.currentTimeMillis()}.txt")
+            f.writeText((loadedRel?.let { "page: $it\n" } ?: "") + consoleLines.joinToString("\n"))
+            app.chatController.attachFile(
+                io.keepagent.app.ChatController.AttachedFile("reports/${f.name}", false, ""),
+            )
+        }
+    }
+
+    fun savePng() {
+        val bmp = lastShot.value ?: run { notice = "capture a screenshot first"; return }
+        scope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val dir = File(fs.root, "reports")
+                dir.mkdirs()
+                val f = File(dir, "screenshot-${System.currentTimeMillis()}.png")
+                f.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                f
+            }
+            withContext(Dispatchers.Main) {
+                notice = res.fold({ "saved ${it.name}" }, { "save failed: ${it.message}" })
+            }
+        }
+    }
+
     /** Captures the WebView's on-screen region via PixelCopy and attaches it to Chat. */
     fun capture() {
         val wv = webViewRef.value ?: return
@@ -160,11 +198,13 @@ fun TestTab(onGotoChat: () -> Unit) {
             PixelCopy.OnPixelCopyFinishedListener { result ->
                 capturing = false
                 if (result == PixelCopy.SUCCESS) {
+                    lastShot.value = bmp
                     val bytes = ByteArray(bmp.allocationByteCount)
                     bmp.copyPixelsToBuffer(ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()))
                     app.chatController.attachImage(
                         ImagePart("image/png", Base64.encodeToString(bytes, Base64.NO_WRAP)),
                     )
+                    attachConsoleToChat()
                     notice = "screenshot attached — opening Chat"
                     onGotoChat()
                 } else {
@@ -191,6 +231,9 @@ fun TestTab(onGotoChat: () -> Unit) {
             ) {
                 Text("Test", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                 Spacer(modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = { fullscreen = true }) {
+                    Text("fullscreen", fontSize = 11.sp)
+                }
                 OutlinedButton(onClick = { setLandscape(!landscape) }) {
                     Text(if (landscape) "portrait" else "landscape", fontSize = 11.sp)
                 }
@@ -217,6 +260,9 @@ fun TestTab(onGotoChat: () -> Unit) {
                 )
                 OutlinedButton(onClick = { load(path) }) {
                     Text("Load")
+                }
+                OutlinedButton(onClick = { webViewRef.value?.reload() }) {
+                    Text("reload", fontSize = 11.sp)
                 }
             }
             if (htmlFiles.isNotEmpty()) {
@@ -272,6 +318,15 @@ fun TestTab(onGotoChat: () -> Unit) {
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         webViewRef.value = this
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onConsoleMessage(cm: ConsoleMessage): Boolean {
+                                val line = "${cm.messageLevel().toString().take(1)}: ${cm.message()} (${cm.sourceId()}:${cm.lineNumber()})"
+                                Handler(Looper.getMainLooper()).post {
+                                    consoleLines = (consoleLines + line).takeLast(200)
+                                }
+                                return true
+                            }
+                        }
                     }
                 },
                 modifier = Modifier
@@ -311,6 +366,54 @@ fun TestTab(onGotoChat: () -> Unit) {
         }
 
         if (!fullscreen) {
+            // Console tail from the page's JS — errors highlighted.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { consoleOpen = !consoleOpen }
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (consoleOpen) "▾" else "▸",
+                    fontSize = 10.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "console · ${consoleLines.size} lines",
+                    fontSize = 10.sp,
+                    color = if (consoleLines.any { it.startsWith("E") }) AmberStatus else TextSecondary,
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "clear",
+                    fontSize = 9.sp,
+                    color = TextSecondary,
+                    modifier = Modifier.clickable { consoleLines = emptyList() },
+                )
+            }
+            if (consoleOpen && consoleLines.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 110.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 14.dp, vertical = 2.dp),
+                ) {
+                    consoleLines.takeLast(50).forEach { l ->
+                        Text(
+                            text = l,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (l.startsWith("E")) AmberStatus else TextSecondary,
+                            maxLines = 3,
+                        )
+                    }
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -324,8 +427,11 @@ fun TestTab(onGotoChat: () -> Unit) {
             ) {
                 Text(if (capturing) "capturing…" else "Send screenshot to agent")
             }
+            OutlinedButton(onClick = { savePng() }) {
+                Text("save png", fontSize = 11.sp)
+            }
             OutlinedButton(onClick = { refreshFiles() }) {
-                Text("refresh files")
+                Text("refresh files", fontSize = 11.sp)
             }
             loadedPath?.let {
                 Text(
