@@ -141,6 +141,18 @@ class ChatController(private val app: KeepAgentApp) {
         _pendingFiles.value = emptyList()
         _draftText.value = ""
         persistDraft()
+        if (app.settingsStore.getString(
+                io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                "firstMessageSent",
+            ) != "true"
+        ) {
+            app.settingsStore.setString(
+                io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                "firstMessageSent",
+                "true",
+            )
+        }
+        app.ensureAgentForeground()
         dispatch(trimmed, images, files)
     }
 
@@ -179,6 +191,7 @@ class ChatController(private val app: KeepAgentApp) {
                 ticker.cancel()
                 saveSession()
                 refreshStats()
+                app.stopAgentForeground()
             }
         }
     }

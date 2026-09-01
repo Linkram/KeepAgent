@@ -120,6 +120,21 @@ fun KeepAgentShell() {
             HorizontalDivider(color = BevelLight, thickness = 1.dp)
         }
 
+        // First-run checklist (M1.4) — shown until dismissed.
+        if (app.settingsStore.getString(
+                io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                "onboardingDone",
+            ) != "true"
+        ) {
+            OnboardingCard(onGotoTab = { selected = it }, onDone = {
+                app.settingsStore.setString(
+                    io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                    "onboardingDone",
+                    "true",
+                )
+            })
+        }
+
         // Active tab over the wall backdrop.
         Box(modifier = Modifier.fillMaxSize()) {
             CastleWallBackground(modifier = Modifier.fillMaxSize())
@@ -132,6 +147,102 @@ fun KeepAgentShell() {
                 else -> ConnectionsTab()
             }
         }
+    }
+}
+
+/**
+ * First-run checklist: connect a model, use a workspace, send a first
+ * message. Steps light up as their conditions become true; dismissible
+ * permanently via the "done" button.
+ */
+@Composable
+private fun OnboardingCard(onGotoTab: (Int) -> Unit, onDone: () -> Unit) {
+    val app = Holder.app
+    val modelOk = app.modelConfigured()
+    val wsOk = runCatching { app.workspaceManager.list().isNotEmpty() }.getOrDefault(false)
+    val sentOk = app.settingsStore.getString(
+        io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+        "firstMessageSent",
+    ) == "true"
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(TileStone)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = "get started",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = TextPrimary,
+        )
+        StepRow(
+            done = modelOk,
+            label = "connect a model",
+            hint = if (modelOk) "ready" else "set base URL + model",
+            onOpen = { onGotoTab(5) },
+        )
+        StepRow(
+            done = wsOk,
+            label = "use a workspace",
+            hint = if (wsOk) "ready" else "create one",
+            onOpen = { onGotoTab(2) },
+        )
+        StepRow(
+            done = sentOk,
+            label = "send a first message",
+            hint = if (sentOk) "done" else "chat with the agent",
+            onOpen = { onGotoTab(0) },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Text(
+                text = "done — hide this",
+                fontSize = 10.sp,
+                color = TextSecondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(onClick = onDone)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun StepRow(done: Boolean, label: String, hint: String, onOpen: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = if (done) "✓" else "○",
+            fontSize = 11.sp,
+            color = if (done) AmberStatus else TextSecondary,
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = if (done) TextSecondary else TextPrimary,
+        )
+        Text(
+            text = "  ·  $hint",
+            fontSize = 10.sp,
+            color = TextSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "open",
+            fontSize = 10.sp,
+            color = TextPrimary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(TileStoneSelected)
+                .clickable(onClick = onOpen)
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        )
     }
 }
 

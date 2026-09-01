@@ -1,6 +1,7 @@
 package io.keepagent.app
 
 import android.app.Application
+import android.content.Intent
 import io.keepagent.addons.provideropenai.ProviderOpenAiAddon
 import io.keepagent.addons.toolscore.ToolsCoreAddon
 import io.keepagent.core.agent.AgentLoop
@@ -155,6 +156,27 @@ class KeepAgentApp : Application() {
         EngineMode.from(
             settingsStore.getString(SettingsStore.NS_GENERAL, "engineMode"),
         )
+
+    /**
+     * Keeps the process alive while a turn runs. Best-effort: if the platform
+     * refuses (e.g. battery restrictions), the turn simply runs in-app.
+     */
+    fun ensureAgentForeground() {
+        try {
+            val intent = Intent(this, AgentForegroundService::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Called when the turn finishes (completed, canceled, or failed). */
+    fun stopAgentForeground() {
+        AgentForegroundService.stop(this)
+    }
 
     fun currentModelId(): String? =
         settingsStore.getString(SettingsStore.NS_MODEL, "model")?.takeIf { it.isNotBlank() }

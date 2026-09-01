@@ -3,6 +3,9 @@
 
     <!-- The app talks to user-configured LLM endpoints (OpenRouter, local). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Foreground service keeps the process alive while an agent turn runs. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".KeepAgentApp"
@@ -34,6 +37,25 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <!-- Keeps the process alive while an agent turn is running. -->
+        <service
+            android:name=".AgentForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="long-running agent conversation turn" />
+        </service>
+
+        <!-- Stop action on the running-turn notification. -->
+        <receiver
+            android:name=".StopReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="io.keepagent.action.STOP_AGENT" />
+            </intent-filter>
+        </receiver>
 
         <!-- Shares workspace files and zips out of the app's own storage. -->
         <provider
