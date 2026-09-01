@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import kotlin.math.roundToInt
@@ -120,18 +121,25 @@ fun KeepAgentShell() {
             HorizontalDivider(color = BevelLight, thickness = 1.dp)
         }
 
-        // First-run checklist (M1.4) — shown until dismissed.
-        if (app.settingsStore.getString(
-                io.keepagent.core.settings.SettingsStore.NS_GENERAL,
-                "onboardingDone",
-            ) != "true"
-        ) {
+        // First-run checklist (M1.4) — shown until dismissed. Local state is
+        // the source of truth so "done" actually removes the card; the
+        // settings flag remembers the choice across restarts.
+        var onboardingVisible by remember {
+            mutableStateOf(
+                app.settingsStore.getString(
+                    io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                    "onboardingDone",
+                ) != "true",
+            )
+        }
+        if (onboardingVisible) {
             OnboardingCard(onGotoTab = { selected = it }, onDone = {
                 app.settingsStore.setString(
                     io.keepagent.core.settings.SettingsStore.NS_GENERAL,
                     "onboardingDone",
                     "true",
                 )
+                onboardingVisible = false
             })
         }
 

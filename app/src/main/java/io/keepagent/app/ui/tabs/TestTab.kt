@@ -186,6 +186,31 @@ fun TestTab(onGotoChat: () -> Unit) {
         }
     }
 
+    /**
+     * Creates a starter test page and loads it — the escape hatch for a
+     * workspace that has no HTML files yet (M1.4h fix).
+     */
+    fun createStarterPage() {
+        scope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val hasIndex = runCatching { fs.read("index.html", 1) }.getOrNull()?.ok == true
+                val name = if (hasIndex) "test-page.html" else "index.html"
+                fs.createFile(name, STARTER_HTML)
+                name
+            }
+            withContext(Dispatchers.Main) {
+                res.fold(
+                    { name ->
+                        refreshFiles()
+                        load(name)
+                        notice = "created $name — load a page to test"
+                    },
+                    { e -> notice = "create failed: ${e.message}" },
+                )
+            }
+        }
+    }
+
     /** Captures the WebView's on-screen region via PixelCopy and attaches it to Chat. */
     fun capture() {
         val wv = webViewRef.value ?: return
@@ -332,7 +357,11 @@ fun TestTab(onGotoChat: () -> Unit) {
                     )
                 }
             }
-            if (htmlFiles.isNotEmpty()) {
+            if (htmlFiles.isEmpty()) {
+                Button(onClick = { createStarterPage() }) {
+                    Text("no html files — create index.html", fontSize = 11.sp)
+                }
+            } else {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -548,3 +577,22 @@ fun TestTab(onGotoChat: () -> Unit) {
         }
     }
 }
+
+/** Minimal page for the agent to inspect via Test tab screenshots (M1.4h). */
+private const val STARTER_HTML = """<!doctype html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KeepAgent test page</title>
+<style>body{font-family:sans-serif;margin:16px;background:#fff;color:#222}
+button{font-size:16px;padding:8px 14px}#out{margin-top:12px;font-family:monospace}</style>
+</head>
+<body>
+<h1>KeepAgent test page</h1>
+<p>Static content: this line is what the agent should see in screenshots.</p>
+<div id="out">clicks: 0</div>
+<button onclick="var d=document.getElementById('out');
+var n=(+d.textContent.replace('clicks:','').trim())+1;
+d.textContent='clicks: '+n;console.log('button clicked, total '+n);">
+click me (logs to console)
+</button>
+</body></html>"""

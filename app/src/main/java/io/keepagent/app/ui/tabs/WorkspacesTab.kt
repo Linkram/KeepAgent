@@ -386,6 +386,7 @@ private fun WorkspaceExplorer(
     // Search + sort + attach (M1.4h).
     var query by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf("name") } // name | size | date
+    var newName by remember { mutableStateOf("") }
 
     // Git panel state.
     var gitOpen by remember { mutableStateOf(false) }
@@ -811,6 +812,74 @@ private fun WorkspaceExplorer(
                             .padding(horizontal = 7.dp, vertical = 4.dp),
                     )
                 }
+            }
+
+            // Create file/folder row (M1.4h fix — empty workspaces had no way in).
+            fun createEntry(isDir: Boolean) {
+                val n = newName.trim()
+                if (n.isEmpty()) {
+                    notice = "give the " + (if (isDir) "folder" else "file") + " a name first"
+                    return
+                }
+                if (n.contains("/") || n == "." || n == "..") {
+                    notice = "one level only: no slashes in the name"
+                    return
+                }
+                val rel = if (dir.isEmpty()) n else "$dir/$n"
+                scope.launch(Dispatchers.IO) {
+                    val r = if (isDir) fs.createDir(rel) else fs.createFile(rel, "")
+                    withContext(Dispatchers.Main) {
+                        notice = if (r.ok) r.text else r.error
+                        if (r.ok) newName = ""
+                        loadDir()
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = "new:",
+                    fontSize = 10.sp,
+                    color = TextSecondary,
+                )
+                TextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    placeholder = { Text("name", fontSize = 12.sp) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = TileStone,
+                        unfocusedContainerColor = TileStone,
+                        focusedIndicatorColor = BevelLight,
+                        unfocusedIndicatorColor = BevelLight,
+                    ),
+                )
+                Text(
+                    text = "file",
+                    fontSize = 10.sp,
+                    color = TextPrimary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(TileStone)
+                        .clickable { createEntry(isDir = false) }
+                        .padding(horizontal = 7.dp, vertical = 4.dp),
+                )
+                Text(
+                    text = "folder",
+                    fontSize = 10.sp,
+                    color = TextPrimary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(TileStone)
+                        .clickable { createEntry(isDir = true) }
+                        .padding(horizontal = 7.dp, vertical = 4.dp),
+                )
             }
 
             // Recently opened files (M1.4h).
