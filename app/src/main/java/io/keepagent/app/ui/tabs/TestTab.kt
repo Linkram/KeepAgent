@@ -3,7 +3,6 @@ package io.keepagent.app.ui.tabs
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Rect
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -53,16 +52,20 @@ import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
 import io.keepagent.app.ui.theme.TileStone
 import io.keepagent.app.ui.theme.UserBubble
+import io.keepagent.app.test.TestServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
  * Test tab (M1.2, F-006 groundwork): renders a workspace HTML file in a
- * local browser. Capture the page and the screenshot rides the next chat
- * message as an image attachment.
+ * local browser served over loopback HTTP (WebView blocks `file://` into
+ * internal storage). Capture the page and the screenshot rides the next
+ * chat message as an image attachment.
  */
 @Composable
 fun TestTab(onGotoChat: () -> Unit) {
@@ -74,6 +77,7 @@ fun TestTab(onGotoChat: () -> Unit) {
     var htmlFiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var path by remember { mutableStateOf("index.html") }
     var loadedPath by remember { mutableStateOf<String?>(null) }
+    var loadedRel by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var capturing by remember { mutableStateOf(false) }
     var webViewRef = remember { mutableStateOf<WebView?>(null) }
@@ -91,12 +95,24 @@ fun TestTab(onGotoChat: () -> Unit) {
             when {
                 f == null -> notice = "outside workspace (file access = workspace)"
                 !f.exists() || f.isDirectory -> notice = "no such file: $p"
-                f.length() > 2_000_000 -> notice = "file too large for the browser: $p"
+                f.length() > 20_000_000 -> notice = "file too large for the browser: $p"
                 else -> {
-                    loadedPath = f.absolutePath
+                    // WebView refuses file:// into the app's internal storage
+                    // (ERR_ACCESS_DENIED), so the workspace is served over
+                    // loopback HTTP instead — relative assets and fetch()
+                    // behave like a real host.
+                    val srv = withContext(Dispatchers.IO) { TestServer.ensure(fs.root) }
+                    val rel = f.relativeTo(fs.root.absoluteFile.normalize())
+                        .path.replace(File.separatorChar, '/')
+                    val url = "http://127.0.0.1:${srv.port}/" +
+                        rel.split("/").joinToString("/") {
+                            URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+                        }
+                    loadedPath = url
+                    loadedRel = rel
                     notice = null
                     withContext(Dispatchers.Main) {
-                        webViewRef.value?.loadUrl(Uri.fromFile(f).toString())
+                        webViewRef.value?.loadUrl(url)
                     }
                 }
             }
@@ -183,12 +199,11 @@ fun TestTab(onGotoChat: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     htmlFiles.take(20).forEach { f ->
-                        val abs = fs.root.resolve(f).absolutePath
                         Text(
                             text = f,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace,
-                            color = if (loadedPath == abs) UserBubble else TextSecondary,
+                            color = if (loadedRel == f) UserBubble else TextSecondary,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(TileStone)
