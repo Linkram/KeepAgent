@@ -231,7 +231,7 @@ class FileService(
      * Returns null when the path is blocked or not a directory.
      */
     fun browse(path: String = "."): List<DirEntry>? {
-        val f = resolve(path) ?: return null
+        val f = resolve(path.ifBlank { "." }) ?: return null
         if (!f.exists() || !f.isDirectory) return null
         return f.listFiles()
             ?.sortedWith(compareByDescending<File> { it.isDirectory }.thenBy { it.name.lowercase() })
@@ -241,7 +241,7 @@ class FileService(
 
     /** Lists a directory (for the Workspaces tab browser). */
     fun listDir(path: String = "."): Result {
-        val f = resolve(path) ?: return Result.fail("outside workspace (file access = workspace)")
+        val f = resolve(path.ifBlank { "." }) ?: return Result.fail("outside workspace (file access = workspace)")
         if (!f.exists()) return Result.fail("no such path: $path")
         if (!f.isDirectory) return Result.fail("not a directory: $path")
         val entries = f.listFiles()

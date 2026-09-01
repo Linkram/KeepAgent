@@ -16,10 +16,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -63,6 +65,7 @@ fun WorkspacesTab() {
     var message by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
     var openWs by remember { mutableStateOf<String?>(null) }
+    var deleteTarget by remember { mutableStateOf<WorkspaceInfo?>(null) }
 
     val scope = rememberCoroutineScope()
     val active = app.workspaceManager.activeName()
@@ -164,15 +167,35 @@ fun WorkspacesTab() {
                         }
                         openWs = ws.name
                     },
-                    onDelete = {
-                        if (ws.name != active) {
-                            app.workspaceManager.delete(ws.name)
-                            scope.launch { refresh() }
-                        }
-                    },
+                    onDelete = { deleteTarget = ws },
                 )
             }
         }
+    }
+    deleteTarget?.let { ws ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete workspace?", fontSize = 14.sp) },
+            text = {
+                Text(
+                    text = "This permanently removes '${ws.name}' and its ${ws.fileCount} files. This cannot be undone.",
+                    fontSize = 12.sp,
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    app.workspaceManager.delete(ws.name)
+                    message = "deleted: ${ws.name}"
+                    deleteTarget = null
+                    scope.launch { refresh() }
+                }) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -264,12 +287,19 @@ private fun WorkspaceExplorer(wsName: String, onBack: () -> Unit) {
     var dir by remember { mutableStateOf("") }
     var openFile by remember { mutableStateOf<String?>(null) }
     var entries by remember { mutableStateOf<List<FileService.DirEntry>?>(null) }
+    var loadError by remember { mutableStateOf<String?>(null) }
 
     fun loadDir() {
         val p = dir
         entries = null
+        loadError = null
         scope.launch {
-            entries = withContext(Dispatchers.IO) { fs.browse(p) }
+            val r = withContext(Dispatchers.IO) { fs.browse(p) }
+            if (r == null) {
+                loadError = "cannot list this folder — blocked by file access"
+            } else {
+                entries = r
+            }
         }
     }
 
@@ -344,7 +374,12 @@ private fun WorkspaceExplorer(wsName: String, onBack: () -> Unit) {
                 val list = entries
                 when {
                     list == null -> item(key = "loading") {
-                        Text("loading…", fontSize = 12.sp, color = TextSecondary)
+                        val err = loadError
+                        Text(
+                            text = err ?: "loading…",
+                            fontSize = 12.sp,
+                            color = if (err != null) AmberStatus else TextSecondary,
+                        )
                     }
                     list.isEmpty() -> item(key = "empty") {
                         Text(

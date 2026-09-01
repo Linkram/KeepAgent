@@ -1,6 +1,7 @@
 package io.keepagent.app.ui.tabs
 
 import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Handler
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -27,7 +29,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,7 +84,23 @@ fun TestTab(onGotoChat: () -> Unit) {
     var loadedRel by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var capturing by remember { mutableStateOf(false) }
+    var fullscreen by remember { mutableStateOf(false) }
+    var landscape by remember { mutableStateOf(false) }
     var webViewRef = remember { mutableStateOf<WebView?>(null) }
+
+    fun setLandscape(on: Boolean) {
+        landscape = on
+        (context as? Activity)?.requestedOrientation =
+            if (on) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+    // Leaving the tab always restores the device's default orientation.
+    DisposableEffect(Unit) {
+        onDispose {
+            (context as? Activity)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     fun refreshFiles() {
         scope.launch {
@@ -155,22 +175,30 @@ fun TestTab(onGotoChat: () -> Unit) {
         )
     }
 
-    LaunchedEffect(Unit) { refreshFiles() }
+    LaunchedEffect(Unit) {
+        val r = withContext(Dispatchers.IO) { fs.glob("**/*.html") }
+        if (r.ok) htmlFiles = r.text.split("\n").filter { it.isNotBlank() }
+        if ("index.html" in htmlFiles && loadedPath == null) load("index.html")
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
-            Text("Test", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-            Text(
-                text = "Renders a workspace HTML file in a local browser. Have the agent build or fix the page in Chat, load it here, then send a screenshot back to the agent.",
-                fontSize = 11.sp,
-                color = TextSecondary,
-            )
+        if (!fullscreen) {
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Test", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                Spacer(modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = { setLandscape(!landscape) }) {
+                    Text(if (landscape) "portrait" else "landscape", fontSize = 11.sp)
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -226,13 +254,19 @@ fun TestTab(onGotoChat: () -> Unit) {
             }
         }
 
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-        ) {
-            AndroidView(
+        // Keyed so the WebView keeps its identity when the chrome above and
+        // below it disappears in fullscreen mode.
+        key("webview") {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = if (fullscreen) 0.dp else 10.dp,
+                        vertical = if (fullscreen) 0.dp else 4.dp,
+                    ),
+            ) {
+                AndroidView(
                 factory = { ctx ->
                     WebView(ctx).apply {
                         settings.javaScriptEnabled = true
@@ -246,24 +280,41 @@ fun TestTab(onGotoChat: () -> Unit) {
                     .border(width = 1.dp, color = BevelLight, shape = RoundedCornerShape(8.dp))
                     .background(Color.White),
             )
-            if (loadedPath == null) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "no page loaded — enter a file path (e.g. index.html) and tap Load",
-                        fontSize = 12.sp,
-                        color = TextSecondary,
-                    )
+                if (loadedPath == null) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "no page loaded — enter a file path (e.g. index.html) and tap Load",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                        )
+                    }
+                }
+                if (fullscreen) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        OutlinedButton(onClick = { setLandscape(!landscape) }) {
+                            Text(if (landscape) "portrait" else "landscape", fontSize = 11.sp)
+                        }
+                        OutlinedButton(onClick = { fullscreen = false }) {
+                            Text("exit fullscreen", fontSize = 11.sp)
+                        }
+                    }
                 }
             }
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+        if (!fullscreen) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -286,6 +337,7 @@ fun TestTab(onGotoChat: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+            }
             }
         }
     }

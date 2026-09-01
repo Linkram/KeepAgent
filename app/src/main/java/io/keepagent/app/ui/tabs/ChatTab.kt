@@ -1,7 +1,14 @@
 package io.keepagent.app.ui.tabs
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.net.Uri
 import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,6 +31,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -40,26 +48,35 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.addonsapi.llm.ImagePart
+import io.keepagent.app.ChatController.AttachedFile
 import io.keepagent.app.Holder
 import io.keepagent.app.R
+import io.keepagent.app.chat.ChatSession
 import io.keepagent.core.agent.AgentRun
 import io.keepagent.core.agent.ApprovalMode
 import io.keepagent.core.agent.ApprovalRequest
 import io.keepagent.core.agent.ToolLine
+import io.keepagent.core.fs.FileService
 import io.keepagent.core.settings.FileAccess
 import io.keepagent.core.settings.SettingsStore
+import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+import kotlin.math.max
 import io.keepagent.app.ui.theme.AgentBubble
 import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BevelLight
@@ -90,6 +107,25 @@ fun ChatTab() {
 
     var input by remember { mutableStateOf("") }
     val pendingImages by controller.pendingImages.collectAsState()
+    val pendingFiles by controller.pendingFiles.collectAsState()
+    val sessionTitle by controller.sessionTitle.collectAsState()
+
+    var showHistory by remember { mutableStateOf(false) }
+    var showFilePicker by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val cScope = rememberCoroutineScope()
+    // Photo picker (system UI on API 33+, legacy fallback below) → ImagePart.
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            cScope.launch {
+                val part = withContext(Dispatchers.IO) { decodePickedImage(context, uri) }
+                if (part != null) controller.attachImage(part)
+            }
+        }
+    }
 
     val baseUrl = app.settingsStore.getString(SettingsStore.NS_MODEL, "baseUrl")
     val modelId = app.currentModelId()
@@ -121,6 +157,8 @@ fun ChatTab() {
                 app.settingsStore.setString(SettingsStore.NS_GENERAL, "fileAccess", access.name)
                 app.fileService.setMode(access)
             },
+            sessionTitle = sessionTitle,
+            onHistory = { showHistory = true },
         )
         HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f), thickness = 1.dp)
 
@@ -146,7 +184,7 @@ fun ChatTab() {
             }
             items(turns, key = { it.run.id }) { turn ->
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    UserBubble(turn.userText, turn.images)
+                    UserBubble(turn.userText, turn.images, turn.files)
                     RunView(turn.run)
                 }
             }
@@ -167,7 +205,44 @@ fun ChatTab() {
             },
             pendingImages = pendingImages,
             onRemoveImage = controller::removePendingImage,
+            pendingFiles = pendingFiles,
+            onRemoveFile = controller::removePendingFile,
+            onAttachImage = {
+                imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+            onAttachFile = { showFilePicker = true },
         )
+
+        if (showHistory) {
+            HistoryDialog(
+                currentSessionId = controller.currentSessionId,
+                onNewChat = {
+                    controller.newSession()
+                    showHistory = false
+                },
+                onOpen = { id ->
+                    controller.openSession(id)
+                    showHistory = false
+                },
+                onRename = controller::renameSession,
+                onDelete = controller::deleteSession,
+                onDismiss = { showHistory = false },
+            )
+        }
+        if (showFilePicker) {
+            AttachFilePicker(
+                fs = app.fileService,
+                onPickFile = { path, preview ->
+                    controller.attachFile(AttachedFile(path, false, preview))
+                    showFilePicker = false
+                },
+                onPickFolder = { path, listing ->
+                    controller.attachFile(AttachedFile(path, true, listing))
+                    showFilePicker = false
+                },
+                onDismiss = { showFilePicker = false },
+            )
+        }
     }
 }
 
@@ -185,6 +260,8 @@ private fun ChatHeader(
     onApprovalMode: (ApprovalMode) -> Unit,
     fileAccess: FileAccess,
     onFileAccess: (FileAccess) -> Unit,
+    sessionTitle: String,
+    onHistory: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -210,6 +287,10 @@ private fun ChatHeader(
             onPick = { s ->
                 onFileAccess(FileAccess.entries.first { it.name.lowercase() == s })
             },
+        )
+        Chip(
+            text = "history: ${sessionTitle.take(24)}",
+            onClick = onHistory,
         )
     }
 }
@@ -380,7 +461,7 @@ private fun RunView(run: AgentRun) {
 }
 
 @Composable
-private fun UserBubble(text: String, images: List<ImagePart>) {
+private fun UserBubble(text: String, images: List<ImagePart>, files: List<AttachedFile> = emptyList()) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Box(
             modifier = Modifier
@@ -389,9 +470,21 @@ private fun UserBubble(text: String, images: List<ImagePart>) {
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                if (text.isNotBlank()) {
+                    Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
                 images.forEach { part ->
                     ImagePartView(part, Modifier.height(72.dp))
+                }
+                files.forEach { f ->
+                    Text(
+                        text = "attached ${if (f.isFolder) "folder" else "file"}: ${f.path}",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = UserBubbleText.copy(alpha = 0.75f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -534,22 +627,28 @@ private fun InputBar(
     onSend: () -> Unit,
     pendingImages: List<ImagePart>,
     onRemoveImage: (Int) -> Unit,
+    pendingFiles: List<AttachedFile> = emptyList(),
+    onRemoveFile: (Int) -> Unit = {},
+    onAttachImage: () -> Unit = {},
+    onAttachFile: () -> Unit = {},
 ) {
+    var attachMenu by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        if (pendingImages.isNotEmpty()) {
+        if (pendingImages.isNotEmpty() || pendingFiles.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(bottom = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "${pendingImages.size} attached:",
+                    text = "${pendingImages.size + pendingFiles.size} attached:",
                     fontSize = 10.sp,
                     color = TextSecondary,
                 )
@@ -579,6 +678,41 @@ private fun InputBar(
                         }
                     }
                 }
+                pendingFiles.forEachIndexed { index, f ->
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(TileStone)
+                            .border(
+                                width = 1.dp,
+                                color = BevelLight,
+                                shape = RoundedCornerShape(6.dp),
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = f.path.substringAfterLast('/'),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = 6.dp, end = 0.dp),
+                        )
+                        IconButton(
+                            onClick = { onRemoveFile(index) },
+                            modifier = Modifier.size(26.dp),
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_delete),
+                                contentDescription = "remove attachment",
+                                tint = AmberStatus,
+                                modifier = Modifier.size(11.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
         Row(
@@ -589,6 +723,32 @@ private fun InputBar(
                 .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box {
+                IconButton(onClick = { attachMenu = true }, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_attach),
+                        contentDescription = "attach",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("image from device", fontSize = 12.sp) },
+                        onClick = {
+                            attachMenu = false
+                            onAttachImage()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("file or folder from workspace", fontSize = 12.sp) },
+                        onClick = {
+                            attachMenu = false
+                            onAttachFile()
+                        },
+                    )
+                }
+            }
             TextField(
                 value = value,
                 onValueChange = onValueChange,
@@ -603,10 +763,347 @@ private fun InputBar(
                     unfocusedIndicatorColor = BevelLight,
                 ),
             )
-            Button(onClick = onSend, enabled = enabled && value.isNotBlank()) {
+            Button(
+                onClick = onSend,
+                enabled = enabled &&
+                    (value.isNotBlank() || pendingImages.isNotEmpty() || pendingFiles.isNotEmpty()),
+            ) {
                 Text("Send")
             }
         }
+    }
+}
+
+// -- chat history (M1.3) ------------------------------------------------------
+
+/** Lists saved chats: open (continue), rename, delete (with confirm), new chat. */
+@Composable
+private fun HistoryDialog(
+    currentSessionId: String?,
+    onNewChat: () -> Unit,
+    onOpen: (String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val controller = Holder.app.chatController
+    val cScope = rememberCoroutineScope()
+    val sessions = remember { mutableStateOf<List<ChatSession>?>(null) }
+    var renamingId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var deletingId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        sessions.value = withContext(Dispatchers.IO) { controller.listSessions() }
+    }
+
+    fun reload() {
+        cScope.launch {
+            sessions.value = withContext(Dispatchers.IO) { controller.listSessions() }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Chats", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+        },
+        text = {
+            val list = sessions.value
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Button(onClick = {
+                    onNewChat()
+                    reload()
+                }) {
+                    Text("new chat")
+                }
+                val del = list?.firstOrNull { it.id == deletingId }
+                if (del != null) {
+                    // Delete confirmation replaces the list.
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "Delete this chat?",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextPrimary,
+                        )
+                        Text(
+                            "'${del.title}' — ${del.turns.size} messages. This cannot be undone.",
+                            fontSize = 12.sp,
+                            color = TextSecondary,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                deletingId = null
+                                onDelete(del.id)
+                                reload()
+                            }) {
+                                Text("delete")
+                            }
+                            TextButton(onClick = { deletingId = null }) {
+                                Text("cancel")
+                            }
+                        }
+                    }
+                } else if (list == null) {
+                    Text("loading…", fontSize = 12.sp, color = TextSecondary)
+                } else if (list.isEmpty()) {
+                    Text(
+                        "no saved chats yet — a chat is saved once it gets a reply.",
+                        fontSize = 12.sp,
+                        color = TextSecondary,
+                    )
+                } else {
+                    list.forEach { s ->
+                        val isCurrent = s.id == currentSessionId
+                        if (renamingId == s.id) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                TextField(
+                                    value = renameText,
+                                    onValueChange = { renameText = it },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    colors = androidx.compose.material3.TextFieldDefaults.colors(
+                                        focusedContainerColor = TileStone,
+                                        unfocusedContainerColor = TileStone,
+                                        focusedIndicatorColor = BevelLight,
+                                        unfocusedIndicatorColor = BevelLight,
+                                    ),
+                                )
+                                TextButton(onClick = {
+                                    renamingId = null
+                                    onRename(s.id, renameText)
+                                    reload()
+                                }) {
+                                    Text("save")
+                                }
+                                TextButton(onClick = { renamingId = null }) {
+                                    Text("cancel")
+                                }
+                            }
+                        } else {
+                            Column(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { onOpen(s.id) }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Text(
+                                        text = s.title,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isCurrent) LinkSearch else TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            renamingId = s.id
+                                            renameText = s.title
+                                        },
+                                        modifier = Modifier.size(22.dp),
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(R.drawable.ic_edit),
+                                            contentDescription = "rename",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(11.dp),
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { deletingId = s.id },
+                                        modifier = Modifier.size(22.dp),
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(R.drawable.ic_delete),
+                                            contentDescription = "delete",
+                                            tint = AmberStatus,
+                                            modifier = Modifier.size(11.dp),
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "${timeAgo(s.updatedAt)} · ${s.turns.size} messages",
+                                    fontSize = 10.sp,
+                                    color = TextSecondary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("close")
+            }
+        },
+    )
+}
+
+// -- workspace file/folder picker (M1.3) --------------------------------------
+
+/**
+ * Drill-down picker over the active workspace. Tapping a file attaches it
+ * (with a preview snippet); tapping a folder drills in, and "attach this
+ * folder" attaches a file listing instead.
+ */
+@Composable
+private fun AttachFilePicker(
+    fs: FileService,
+    onPickFile: (path: String, preview: String) -> Unit,
+    onPickFolder: (path: String, listing: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var dir by remember { mutableStateOf(".") }
+    val entries = remember(dir) { mutableStateOf<List<FileService.DirEntry>?>(null) }
+    LaunchedEffect(dir) {
+        entries.value = null
+        entries.value = withContext(Dispatchers.IO) { fs.browse(dir) }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (dir != ".") {
+                    TextButton(onClick = { dir = parentOf(dir) }) {
+                        Text("up", fontSize = 11.sp, color = TextSecondary)
+                    }
+                }
+                Text(
+                    text = "workspace: $dir",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        },
+        text = {
+            val list = entries.value
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (dir != ".") {
+                    TextButton(onClick = {
+                        onPickFolder(dir, folderListing(fs, dir))
+                    }) {
+                        Text("attach this folder", fontSize = 12.sp)
+                    }
+                }
+                if (list == null) {
+                    Text("loading…", fontSize = 12.sp, color = TextSecondary)
+                } else {
+                    list.forEach { e ->
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable {
+                                    if (e.isDirectory) {
+                                        dir = joinPath(dir, e.name)
+                                    } else {
+                                        onPickFile(joinPath(dir, e.name), filePreview(fs, joinPath(dir, e.name)))
+                                    }
+                                }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = if (e.isDirectory) "${e.name}/" else e.name,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (e.isDirectory) LinkSearch else TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (!e.isDirectory) {
+                                Text("${e.sizeBytes} B", fontSize = 10.sp, color = TextSecondary)
+                            }
+                        }
+                    }
+                    if (list.isEmpty()) {
+                        Text("(empty folder)", fontSize = 11.sp, color = TextSecondary)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("cancel")
+            }
+        },
+    )
+}
+
+// -- attach helpers (M1.3) -----------------------------------------------------
+
+private fun joinPath(base: String, name: String): String =
+    if (base == ".") name else "$base/$name"
+
+private fun parentOf(path: String): String =
+    path.substringBeforeLast('/', ".")
+
+/** First ~8k chars of a text file, or a note for binary/blocked files. */
+private fun filePreview(fs: FileService, path: String): String =
+    fs.read(path, 8_000).takeIf { it.ok }?.text?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: "(binary or unreadable file)"
+
+/** A capped, newline-joined file listing of a folder, for the model prompt. */
+private fun folderListing(fs: FileService, dir: String): String {
+    val pattern = if (dir == ".") "**/*" else "$dir/**/*"
+    val files = fs.glob(pattern, 100)
+        .takeIf { it.ok }?.text
+        ?.lineSequence()
+        ?.filter { it.isNotBlank() }
+        ?.toList()
+        ?: emptyList()
+    if (files.isEmpty()) return "(empty folder)"
+    return files.take(60).joinToString("\n") +
+        (if (files.size > 60) "\n… (${files.size} files total)" else "")
+}
+
+/** Picks a photo from the device: decode, downscale to 1280px max edge, JPEG q80. */
+private fun decodePickedImage(context: Context, uri: Uri): ImagePart? = runCatching {
+    val input = context.contentResolver.openInputStream(uri) ?: return@runCatching null
+    val original = BitmapFactory.decodeStream(input)
+    input.close()
+    if (original == null) return@runCatching null
+    val w = original.width
+    val h = original.height
+    val maxEdge = 1280
+    val scale = if (max(w, h) > maxEdge) maxEdge.toFloat() / max(w, h) else 1f
+    val bmp = if (scale < 1f) {
+        val m = Matrix()
+        m.preScale(scale, scale)
+        Bitmap.createBitmap(original, 0, 0, w, h, m, true)
+    } else {
+        original
+    }
+    val out = ByteArrayOutputStream()
+    bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
+    ImagePart("image/jpeg", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
+}.getOrNull()
+
+private fun timeAgo(ts: Long): String {
+    val s = (System.currentTimeMillis() - ts) / 1000
+    return when {
+        s < 60 -> "just now"
+        s < 3600 -> "${s / 60} min ago"
+        s < 86400 -> "${s / 3600} h ago"
+        else -> "${s / 86400} d ago"
     }
 }
 
