@@ -71,6 +71,16 @@ fun KeepAgentShell() {
     var selected by remember { mutableIntStateOf(0) }
     val isRunning by app.chatController.isRunning.collectAsState()
 
+    // A share-in file just landed in the workspace: jump to Chat, where the
+    // attachment chip is visible in the input bar.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val p = io.keepagent.app.ui.common.Pending.sharedImport
+        if (p != null) {
+            io.keepagent.app.ui.common.Pending.sharedImport = null
+            selected = 0
+        }
+    }
+
     // targetSdk 35 forces edge-to-edge: the app paints under the system bars
     // and the keyboard, so the bottom insets are applied here. imePadding
     // keeps the header/tiles fixed when the keyboard opens — only the content

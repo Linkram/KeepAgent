@@ -60,5 +60,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    // Local git for the workspace panel (M1.4): no remotes, repo confined to
+    // the workspace root. +3-4 MB to the APK; slf4j-nop silences JGit's logging.
+    implementation("org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r")
+    runtimeOnly("org.slf4j:slf4j-nop:2.0.13")
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

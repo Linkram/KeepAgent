@@ -24,3 +24,12 @@ object FileOpener {
         pendingPath = path
     }
 }
+
+/**
+ * One-shot cross-screen handoffs: a share-in file just landed in the
+ * workspace, so the shell jumps to Chat to show the attachment.
+ */
+object Pending {
+    @Volatile
+    var sharedImport: String? = null
+}

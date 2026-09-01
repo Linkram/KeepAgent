@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider paths for sharing workspace files/zips (M1.4). files-path is
+     relative to the app's files directory; the whole keepagent tree is shareable. -->
+<paths>
+    <files-path name="keepagent" path="keepagent/" />
+    <cache-path name="cache" path="." />
+</paths>

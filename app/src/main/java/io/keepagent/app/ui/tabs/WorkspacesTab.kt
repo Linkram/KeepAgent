@@ -1,5 +1,6 @@
 package io.keepagent.app.ui.tabs
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -7,17 +8,23 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.core.content.FileProvider
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -36,9 +43,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.app.Holder
+import io.keepagent.app.git.GitService
+import io.keepagent.app.ui.common.FileOpener
 import io.keepagent.core.fs.FileService
 import io.keepagent.core.settings.FileAccess
 import io.keepagent.core.workspace.WorkspaceInfo
@@ -53,6 +63,9 @@ import io.keepagent.app.ui.theme.TileStoneSelected
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 /**
  * Workspaces tab (M1, F-007): list, create, switch, and delete workspaces.
@@ -75,18 +88,31 @@ fun WorkspacesTab() {
             "fileAccess",
         ),
     )
+    // Chat asked us to focus a file (F-012-style handoff): open its folder.
+    val pendingFile = remember {
+        val p = FileOpener.pendingPath
+        if (p != null) FileOpener.pendingPath = null
+        p
+    }
 
     suspend fun refresh() {
         list = withContext(Dispatchers.IO) { app.workspaceManager.list() }
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(Unit) {
+        refresh()
+        if (pendingFile != null) openWs = active
+    }
 
     // Tapping a workspace makes it active (file tools re-point to its root)
     // and opens the file browser for it.
     val open = openWs
     if (open != null) {
-        WorkspaceExplorer(wsName = open, onBack = { openWs = null })
+        WorkspaceExplorer(
+            wsName = open,
+            initialPath = pendingFile,
+            onBack = { openWs = null },
+        )
         return
     }
 
@@ -279,15 +305,113 @@ private fun formatSize(bytes: Long): String = when {
  * the access mode.
  */
 @Composable
-private fun WorkspaceExplorer(wsName: String, onBack: () -> Unit) {
+private fun WorkspaceExplorer(
+    wsName: String,
+    initialPath: String? = null,
+    onBack: () -> Unit,
+) {
     val app = Holder.app
     val fs = app.fileService
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val git = remember { GitService() }
 
     var dir by remember { mutableStateOf("") }
     var openFile by remember { mutableStateOf<String?>(null) }
     var entries by remember { mutableStateOf<List<FileService.DirEntry>?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+
+    // Git panel state.
+    var gitOpen by remember { mutableStateOf(false) }
+    var gitStatus by remember { mutableStateOf<GitService.StatusInfo?>(null) }
+    var gitDiff by remember { mutableStateOf<String?>(null) }
+    var gitDiffOpen by remember { mutableStateOf(false) }
+    var gitLog by remember { mutableStateOf<List<GitService.CommitInfo>?>(null) }
+    var gitLogOpen by remember { mutableStateOf(false) }
+    var commitDialog by remember { mutableStateOf(false) }
+    var commitMsg by remember { mutableStateOf("") }
+    var gitBusy by remember { mutableStateOf(false) }
+
+    fun refreshGit() {
+        scope.launch(Dispatchers.IO) {
+            val root = fs.root
+            val st = if (git.isRepo(root)) git.status(root) else null
+            val log = if (git.isRepo(root)) git.log(root, 15) else emptyList()
+            withContext(Dispatchers.Main) {
+                gitStatus = st
+                gitLog = log
+            }
+        }
+    }
+
+    fun showDiff() {
+        scope.launch(Dispatchers.IO) {
+            val d = git.diffText(fs.root)
+            withContext(Dispatchers.Main) {
+                gitDiff = d
+                gitDiffOpen = d != null
+            }
+        }
+    }
+
+    fun commitAll() {
+        gitBusy = true
+        scope.launch(Dispatchers.IO) {
+            val h = git.commitAll(fs.root, commitMsg)
+            withContext(Dispatchers.Main) {
+                gitBusy = false
+                commitDialog = false
+                commitMsg = ""
+                if (h != null) {
+                    notice = "committed $h"
+                    refreshGit()
+                } else {
+                    notice = "nothing to commit (or the workspace is not a repository)"
+                }
+            }
+        }
+    }
+
+    /** Zips the whole workspace and hands it to the system share sheet. */
+    fun shareZip() {
+        notice = "zipping…"
+        scope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val root = fs.root
+                val zip = File(context.cacheDir, "keepagent-$wsName-${System.currentTimeMillis()}.zip")
+                ZipOutputStream(zip.outputStream()).use { zos ->
+                    root.walkTopDown().filter { it.isFile && !it.path.contains("/.git/") }.forEach { f ->
+                        zos.putNextEntry(ZipEntry(f.relativeTo(root).path.replace(File.separatorChar, '/')))
+                        f.inputStream().use { it.copyTo(zos) }
+                        zos.closeEntry()
+                    }
+                }
+                zip
+            }
+            withContext(Dispatchers.Main) {
+                res.fold(
+                    { zip ->
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "io.keepagent.app.fileprovider",
+                            zip,
+                        )
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/zip"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(send, "share workspace as zip"),
+                        )
+                        notice = null
+                    },
+                    { e -> notice = "zip failed: ${e.message}" },
+                )
+            }
+        }
+    }
 
     fun loadDir() {
         val p = dir
@@ -304,6 +428,22 @@ private fun WorkspaceExplorer(wsName: String, onBack: () -> Unit) {
     }
 
     LaunchedEffect(dir) { loadDir() }
+
+    // Focus the file/folder the Chat tab handed over.
+    LaunchedEffect(Unit) {
+        val p = initialPath
+        if (p != null) {
+            if (File(fs.root, p).isFile) {
+                val slash = p.lastIndexOf('/')
+                if (slash >= 0) dir = p.substring(0, slash)
+                openFile = p
+            } else {
+                val slash = p.lastIndexOf('/')
+                dir = if (slash >= 0) p.substring(0, slash) else p
+            }
+        }
+        refreshGit()
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -354,6 +494,214 @@ private fun WorkspaceExplorer(wsName: String, onBack: () -> Unit) {
                     }
                 }
             }
+        }
+
+        notice?.let { n ->
+            Text(
+                text = n,
+                fontSize = 10.sp,
+                color = AmberStatus,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 3.dp),
+            )
+        }
+
+        // Git panel — local repo only, no remotes.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 2.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .clickable { gitOpen = !gitOpen; if (gitOpen) refreshGit() }
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = if (gitOpen) "▾" else "▸",
+                fontSize = 10.sp,
+                color = TextSecondary,
+            )
+            val chipSt = gitStatus
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = when {
+                    chipSt == null && !gitOpen -> "git · not initialized"
+                    chipSt == null -> "git"
+                    chipSt.clean -> "git · clean"
+                    else -> "git · ${chipSt.count} changed"
+                },
+                fontSize = 10.sp,
+                color = if (chipSt != null && !chipSt.clean) AmberStatus else TextSecondary,
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = "share zip",
+                fontSize = 9.sp,
+                color = TextSecondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { shareZip() }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+
+        if (gitOpen) {
+            val st = gitStatus
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 260.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (st == null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "no git repository in this workspace.",
+                            fontSize = 10.sp,
+                            color = TextSecondary,
+                        )
+                        Button(onClick = {
+                            scope.launch(Dispatchers.IO) {
+                                git.init(fs.root)
+                                withContext(Dispatchers.Main) { refreshGit() }
+                            }
+                        }) {
+                            Text("initialize", fontSize = 10.sp)
+                        }
+                    }
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = if (st.clean) "clean — nothing changed" else "${st.count} changed",
+                            fontSize = 10.sp,
+                            color = TextSecondary,
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(
+                            text = "refresh",
+                            fontSize = 9.sp,
+                            color = TextSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { refreshGit() }
+                                .padding(horizontal = 5.dp, vertical = 2.dp),
+                        )
+                        Text(
+                            text = "diff",
+                            fontSize = 9.sp,
+                            color = TextSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { showDiff() }
+                                .padding(horizontal = 5.dp, vertical = 2.dp),
+                        )
+                        Text(
+                            text = "log",
+                            fontSize = 9.sp,
+                            color = TextSecondary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { gitLogOpen = !gitLogOpen }
+                                .padding(horizontal = 5.dp, vertical = 2.dp),
+                        )
+                        if (!st.clean) {
+                            Text(
+                                text = "commit all",
+                                fontSize = 9.sp,
+                                color = TextPrimary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(TileStoneSelected)
+                                    .clickable { commitDialog = true }
+                                    .padding(horizontal = 5.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    val diffTextShown = gitDiff
+                    if (gitDiffOpen && diffTextShown != null) {
+                        SelectionContainer {
+                            Text(
+                                text = diffTextShown,
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = TextSecondary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(TileStone)
+                                    .padding(8.dp),
+                            )
+                        }
+                    }
+                    if (gitLogOpen) {
+                        val log = gitLog
+                        if (log == null) {
+                            Text("no commits yet", fontSize = 10.sp, color = TextSecondary)
+                        } else {
+                            log.forEach { c ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = c.hash,
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = LinkRead,
+                                    )
+                                    Text(
+                                        text = c.whenText,
+                                        fontSize = 9.sp,
+                                        color = TextSecondary,
+                                    )
+                                    Text(
+                                        text = c.message,
+                                        fontSize = 9.sp,
+                                        color = TextPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Commit dialog with a message line.
+        if (commitDialog) {
+            AlertDialog(
+                onDismissRequest = { commitDialog = false },
+                title = { Text("commit all changes", fontSize = 13.sp) },
+                text = {
+                    TextField(
+                        value = commitMsg,
+                        onValueChange = { commitMsg = it },
+                        placeholder = { Text("commit message", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = TileStone,
+                            unfocusedContainerColor = TileStone,
+                            focusedIndicatorColor = BevelLight,
+                            unfocusedIndicatorColor = BevelLight,
+                        ),
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = { commitAll() }, enabled = !gitBusy) {
+                        Text(if (gitBusy) "committing…" else "commit", fontSize = 11.sp)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { commitDialog = false }) { Text("cancel") }
+                },
+            )
         }
 
         val file = openFile
@@ -444,11 +792,44 @@ private fun FileEditor(relPath: String, onBack: () -> Unit, onSaved: () -> Unit)
     val app = Holder.app
     val fs = app.fileService
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     var text by remember { mutableStateOf("") }
     var savedText by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
+
+    /** Hands the file to the system share sheet via FileProvider. */
+    fun shareFile() {
+        scope.launch(Dispatchers.IO) {
+            val f = runCatching { fs.resolve(relPath) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                if (f == null || !f.exists()) {
+                    status = "share failed: no such file"
+                    return@withContext
+                }
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "io.keepagent.app.fileprovider",
+                    f,
+                )
+                val mime = when {
+                    relPath.endsWith(".html") || relPath.endsWith(".htm") -> "text/html"
+                    relPath.endsWith(".png") -> "image/png"
+                    relPath.endsWith(".txt") || relPath.endsWith(".md") ||
+                        relPath.endsWith(".log") || relPath.endsWith(".json") -> "text/plain"
+                    else -> "*/*"
+                }
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = mime
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(send, "share file"))
+                status = null
+            }
+        }
+    }
 
     LaunchedEffect(relPath) {
         val r = withContext(Dispatchers.IO) { fs.read(relPath, 1_000_000) }
@@ -546,6 +927,9 @@ private fun FileEditor(relPath: String, onBack: () -> Unit, onSaved: () -> Unit)
                             color = AmberStatus,
                             modifier = Modifier.padding(end = 10.dp),
                         )
+                    }
+                    OutlinedButton(onClick = { shareFile() }) {
+                        Text("share", fontSize = 11.sp)
                     }
                     Button(
                         onClick = {
