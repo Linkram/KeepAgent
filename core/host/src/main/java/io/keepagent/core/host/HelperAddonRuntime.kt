@@ -21,9 +21,12 @@ import java.util.concurrent.TimeUnit
  * over AIDL IPC (ADR-0001, M1). Same prelude and add-on code as in-process;
  * the `native` host object's calls cross the IPC boundary instead of JNI.
  *
- * Falls back to an in-process [JsAddonRuntime] when the helper service is
- * unreachable or the native library is unavailable in the helper process —
- * isolation degrades, functionality does not.
+ * Failure handling:
+ * - helper unreachable at enable time → in-process [JsAddonRuntime] fallback;
+ * - helper dies MID-SESSION (OS reclaims the process under memory pressure)
+ *   → the next call detects the lost runtime and fails over transparently:
+ *   rebind the helper, or fall back in-process, re-running the add-on
+ *   bootstrap so its tools exist again (2026-09-03).
  */
 class HelperAddonRuntime(
     private val context: Context,
@@ -37,6 +40,12 @@ class HelperAddonRuntime(
     private var service: KeepJsService? = null
     private var connection: ServiceConnection? = null
     private var fallback: JsAddonRuntime? = null
+
+    // Bootstrap memory for failover: the add-on source is re-run on a fresh
+    // runtime after the helper dies (a dead process lost its JS state).
+    private var lastSource: String? = null
+    private var lastFilename: String? = null
+    private var bootstrapped = false
 
     private val callback = object : IKeepJsCallback.Stub() {
         override fun onLog(message: String) {
@@ -53,32 +62,32 @@ class HelperAddonRuntime(
     }
 
     override fun initialize(): Boolean {
-        if (bindAndInit()) return true
-        return fallbackInit()
+        val ok = bindAndInit() || fallbackInit()
+        bootstrapped = false
+        return ok
     }
 
     override fun evaluate(source: String, filename: String): String? {
-        service?.let { svc ->
-            return try {
-                val err = svc.eval(addonId, source, filename)
-                if (err.isNullOrEmpty()) null else err
-            } catch (e: Exception) {
-                "IPC error: ${e.message}"
-            }
-        }
-        return fallback?.evaluate(source, filename) ?: "runtime not started"
+        if (!ensureRuntime()) return "runtime not started"
+        lastSource = source
+        lastFilename = filename
+        val err = runEvaluate(source, filename)
+        if (err == null) bootstrapped = true
+        return err
     }
 
     override fun invokeTool(name: String, argsJson: String): String {
-        service?.let { svc ->
-            return try {
-                svc.invokeTool(addonId, name, argsJson)
-            } catch (e: Exception) {
-                """{"ok":false,"error":"IPC failure: ${e.message}"}"""
-            }
+        val wasLost = service == null && fallback == null
+        if (!ensureRuntime()) return FAIL_INACTIVE
+        if (wasLost && !bootstrapped) {
+            // The runtime we just (re)built has no add-on state: re-run the
+            // bootstrap so the tool below exists again.
+            val src = lastSource ?: return FAIL_NO_SOURCE
+            val err = runEvaluate(src, lastFilename ?: "$addonId.js")
+            if (err != null) return """{"ok":false,"error":"sandbox re-bootstrap failed: $err"}"""
+            bootstrapped = true
         }
-        return fallback?.invokeTool(name, argsJson)
-            ?: """{"ok":false,"error":"runtime not active"}"""
+        return runInvokeTool(name, argsJson)
     }
 
     override fun shutdown() {
@@ -93,9 +102,49 @@ class HelperAddonRuntime(
         service = null
         fallback?.shutdown()
         fallback = null
+        bootstrapped = false
     }
 
     // -- internals ------------------------------------------------------------
+
+    /**
+     * True when a usable runtime exists; otherwise re-initializes (rebind
+     * the helper first, then the in-process fallback). An old, dead
+     * connection is unbound before rebinding.
+     */
+    private fun ensureRuntime(): Boolean {
+        if (service != null || fallback != null) return true
+        onLog("sandbox runtime lost — failing over (helper rebind, else in-process)")
+        connection?.let { conn ->
+            runCatching { context.unbindService(conn) }
+        }
+        connection = null
+        service = null
+        return bindAndInit() || fallbackInit()
+    }
+
+    private fun runEvaluate(source: String, filename: String): String? {
+        service?.let { svc ->
+            return try {
+                val err = svc.eval(addonId, source, filename)
+                if (err.isNullOrEmpty()) null else err
+            } catch (e: Exception) {
+                "IPC error: ${e.message}"
+            }
+        }
+        return fallback?.evaluate(source, filename) ?: "runtime not started"
+    }
+
+    private fun runInvokeTool(name: String, argsJson: String): String {
+        service?.let { svc ->
+            return try {
+                svc.invokeTool(addonId, name, argsJson)
+            } catch (e: Exception) {
+                """{"ok":false,"error":"IPC failure: ${e.message}"}"""
+            }
+        }
+        return fallback?.invokeTool(name, argsJson) ?: FAIL_INACTIVE
+    }
 
     private fun bindAndInit(): Boolean {
         val latch = CountDownLatch(1)
@@ -112,10 +161,11 @@ class HelperAddonRuntime(
                 // wait just lets the timeout expire into the fallback path.
                 // After a successful connect, a disconnect (helper crash /
                 // unbind) makes the binder unusable: clear the reference so
-                // subsequent calls fail over instead of throwing.
+                // the next call fails over (ensureRuntime) instead of throwing.
                 if (service != null) {
-                    onLog("helper process disconnected — service reference cleared")
+                    onLog("helper process disconnected — failing over on next call")
                     service = null
+                    bootstrapped = false
                 }
             }
         }
@@ -176,5 +226,7 @@ class HelperAddonRuntime(
 
     companion object {
         private const val BIND_TIMEOUT_SECONDS = 5L
+        private const val FAIL_INACTIVE = """{"ok":false,"error":"runtime not active"}"""
+        private const val FAIL_NO_SOURCE = """{"ok":false,"error":"sandbox bootstrap lost"}"""
     }
 }
