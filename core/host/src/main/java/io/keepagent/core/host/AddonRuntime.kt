@@ -18,5 +18,13 @@ interface AddonRuntime {
     /** Invokes a tool handler by name; returns the handler's JSON result string. */
     fun invokeTool(name: String, argsJson: String): String
 
+    /**
+     * Updates the environment snapshot (workspace path, settings) WITHOUT
+     * restarting the runtime — called when the active workspace changes
+     * mid-session so `ka.native.workspace.path` keeps pointing at the right
+     * place. Default: no-op for runtimes whose environment is already live.
+     */
+    fun refreshEnvironment(workspacePath: String) {}
+
     fun shutdown()
 }

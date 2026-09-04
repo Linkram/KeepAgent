@@ -167,6 +167,19 @@ class KeepAgentApp : Application() {
         }
     }
 
+    /**
+     * Applies an active-workspace change to every subsystem (2026-09-03):
+     * re-roots the file service (Tier-1 tools) and refreshes the Tier-2
+     * sandbox environment snapshots. Called by the UI after a successful
+     * workspace switch.
+     */
+    fun workspaceChanged() {
+        val root = workspaceManager.activeRoot().absolutePath
+        fileService.setRoot(workspaceManager.activeRoot())
+        addonManager.workspaceChanged(root)
+        eventBus.emit(EventKind.SYSTEM, "app", "workspace switched → ${workspaceManager.activeName()}")
+    }
+
     /** This process's name ("io.keepagent" or "io.keepagent:js"). */
     private fun currentProcessName(): String =
         if (Build.VERSION.SDK_INT >= 28) {

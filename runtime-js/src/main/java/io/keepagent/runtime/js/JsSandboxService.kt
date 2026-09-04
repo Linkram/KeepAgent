@@ -21,7 +21,16 @@ class JsSandboxService : Service() {
     private val lock = Any()
     private val entries = HashMap<String, Entry>()
 
-    private class Entry(val host: JsHost)
+    /**
+     * The environment a sandboxed add-on reads through the `native` object.
+     * Mutable: the client refreshes it when the active workspace or settings
+     * change mid-session (updateEnv) instead of restarting the engine and
+     * losing the add-on's JS state. A holder (not the Entry) because the
+     * callback closures are constructed before the entry exists.
+     */
+    private class Env(var settingsDoc: String, var workspace: String)
+
+    private class Entry(val host: JsHost, val env: Env)
 
     /** The AIDL stub. Lives in this service so the binder outlives the client. */
     private val binder = object : KeepJsService.Stub() {
@@ -39,6 +48,10 @@ class JsSandboxService : Service() {
 
         override fun invokeTool(addonId: String, toolName: String, argsJson: String): String =
             this@JsSandboxService.invokeTool(addonId, toolName, argsJson)
+
+        override fun updateEnv(addonId: String, settingsJson: String?, workspacePath: String?) {
+            this@JsSandboxService.updateEnv(addonId, settingsJson, workspacePath)
+        }
 
         override fun shutdownAddon(addonId: String) {
             this@JsSandboxService.shutdownAddon(addonId)
@@ -58,10 +71,10 @@ class JsSandboxService : Service() {
         workspacePath: String?,
     ) {
         if (callback == null) return
-        val settingsDoc = settingsJson ?: "{}"
         val cb = callback
         synchronized(lock) {
             entries.remove(addonId)?.host?.close()
+            val env = Env(settingsJson ?: "{}", workspacePath ?: "")
             val host = JsHost(
                 object : JsHost.Callbacks {
                     override fun onLog(message: String) {
@@ -76,11 +89,13 @@ class JsSandboxService : Service() {
                         runCatching { cb.onError(message) }
                     }
 
-                    override fun workspacePath(): String = workspacePath ?: ""
+                    // Live reads through the env holder: updateEnv() can
+                    // refresh these without restarting the engine.
+                    override fun workspacePath(): String = env.workspace
 
                     override fun settingsGet(namespace: String): String? =
                         try {
-                            json.parseToJsonElement(settingsDoc).jsonObject[namespace]?.toString()
+                            json.parseToJsonElement(env.settingsDoc).jsonObject[namespace]?.toString()
                         } catch (_: Exception) {
                             null
                         }
@@ -96,7 +111,17 @@ class JsSandboxService : Service() {
                 runCatching { cb.onError("prelude failed: $preludeError") }
                 return
             }
-            entries[addonId] = Entry(host)
+            entries[addonId] = Entry(host, env)
+        }
+    }
+
+    /** Refreshes a live engine's environment snapshot without restarting it. */
+    private fun updateEnv(addonId: String, settingsJson: String?, workspacePath: String?) {
+        synchronized(lock) {
+            entries[addonId]?.let { entry ->
+                if (settingsJson != null) entry.env.settingsDoc = settingsJson
+                if (workspacePath != null) entry.env.workspace = workspacePath
+            }
         }
     }
 

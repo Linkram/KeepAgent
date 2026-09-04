@@ -16,7 +16,9 @@ import kotlinx.serialization.json.Json
  */
 class JsAddonRuntime(
     private val addonId: String,
-    private val workspacePath: String,
+    // `var`: refreshEnvironment() re-points it on a workspace switch; the
+    // callback below reads it live, so no engine restart is needed.
+    private var workspacePath: String,
     private val settings: SettingsStore,
     private val onLog: (String) -> Unit,
     private val onRegisterTool: (addonId: String, specJson: String) -> Unit,
@@ -60,6 +62,10 @@ class JsAddonRuntime(
     override fun invokeTool(name: String, argsJson: String): String =
         host?.callFunction("__kaInvokeTool", name, argsJson)
             ?: """{"ok":false,"error":"runtime not active"}"""
+
+    override fun refreshEnvironment(workspacePath: String) {
+        this.workspacePath = workspacePath
+    }
 
     override fun shutdown() {
         host?.close()

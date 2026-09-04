@@ -17,6 +17,11 @@ interface KeepJsService {
     // Invokes a registered tool handler; returns the handler's JSON result string.
     String invokeTool(String addonId, String toolName, String argsJson);
 
+    // Refreshes the environment snapshot (settings document + workspace
+    // path) for a live engine WITHOUT restarting it — used when the active
+    // workspace or settings change mid-session.
+    void updateEnv(String addonId, String settingsJson, String workspacePath);
+
     void shutdownAddon(String addonId);
     void shutdownAll();
 }

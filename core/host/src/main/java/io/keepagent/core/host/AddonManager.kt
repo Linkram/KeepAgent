@@ -308,6 +308,21 @@ class AddonManager(
         refreshRecords()
     }
 
+    /**
+     * Applies an active-workspace change to every live runtime (2026-09-03).
+     * Without this, a workspace switch left Tier-2 sandboxes pointing at the
+     * OLD workspace (the path is captured at enable time) until each
+     * add-on was manually re-enabled.
+     */
+    @Synchronized
+    fun workspaceChanged(newPath: String) {
+        this.workspacePath = newPath
+        runtimes.values.forEach { rt ->
+            runCatching { rt.refreshEnvironment(newPath) }
+        }
+        eventBus.emit(EventKind.ADDON, "host", "workspace changed → $newPath (${runtimes.size} runtime(s) updated)")
+    }
+
     /** Called by the JS bridge when an add-on registers a tool. */
     fun onToolRegistered(addonId: String, specJson: String) {
         val tool = runCatching { json.decodeFromString(ToolRegistration.serializer(), specJson) }

@@ -175,7 +175,7 @@ fun WorkspacesTab() {
                 val created = app.workspaceManager.create(name)
                 message = if (created != null) {
                     app.workspaceManager.setActive(created)
-                    app.fileService.setRoot(app.workspaceManager.activeRoot())
+                    app.workspaceChanged()
                     openWs = created
                     "created: $created"
                 } else {
@@ -227,7 +227,7 @@ fun WorkspacesTab() {
                     onSelect = {
                         if (ws.name != active) {
                             app.workspaceManager.setActive(ws.name)
-                            app.fileService.setRoot(app.workspaceManager.activeRoot())
+                            app.workspaceChanged()
                             scope.launch { refresh() }
                         }
                         openWs = ws.name

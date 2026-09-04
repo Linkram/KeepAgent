@@ -31,7 +31,9 @@ import java.util.concurrent.TimeUnit
 class HelperAddonRuntime(
     private val context: Context,
     private val addonId: String,
-    private val workspacePath: String,
+    // `var`: refreshEnvironment() re-points it on a workspace switch and
+    // pushes the new snapshot into the live helper engine.
+    private var workspacePath: String,
     private val settings: SettingsStore,
     private val onLog: (String) -> Unit,
     private val onRegisterTool: (addonId: String, specJson: String) -> Unit,
@@ -88,6 +90,17 @@ class HelperAddonRuntime(
             bootstrapped = true
         }
         return runInvokeTool(name, argsJson)
+    }
+
+    override fun refreshEnvironment(workspacePath: String) {
+        this.workspacePath = workspacePath
+        service?.let { svc ->
+            runCatching {
+                svc.updateEnv(addonId, settingsDocument(), workspacePath)
+            }.onFailure { e -> onLog("helper env refresh failed: ${e.message}") }
+            return
+        }
+        fallback?.refreshEnvironment(workspacePath)
     }
 
     override fun shutdown() {
