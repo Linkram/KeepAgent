@@ -107,7 +107,16 @@ class HelperAddonRuntime(
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
-                latch.countDown()
+                // Never count down the connection latch here — only
+                // onServiceConnected signals success; a disconnect during the
+                // wait just lets the timeout expire into the fallback path.
+                // After a successful connect, a disconnect (helper crash /
+                // unbind) makes the binder unusable: clear the reference so
+                // subsequent calls fail over instead of throwing.
+                if (service != null) {
+                    onLog("helper process disconnected — service reference cleared")
+                    service = null
+                }
             }
         }
         try {

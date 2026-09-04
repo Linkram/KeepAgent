@@ -29,7 +29,7 @@ class JsHost(private val callbacks: Callbacks) {
     fun start(): Boolean {
         if (handle != 0L) return true
         if (!QuickJs.isLoaded) return false
-        handle = nativeCreate()
+        handle = nativeCreate(callbacks)
         return handle != 0L
     }
 
@@ -57,7 +57,7 @@ class JsHost(private val callbacks: Callbacks) {
         }
     }
 
-    private external fun nativeCreate(): Long
+    private external fun nativeCreate(callbacks: Callbacks): Long
     private external fun nativeEval(handle: Long, source: String, filename: String): String?
     private external fun nativeCallTwo(handle: Long, funcName: String, arg1: String, arg2: String?): String?
     private external fun nativeDestroy(handle: Long)

@@ -1,5 +1,12 @@
 package io.keepagent.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,6 +32,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -48,6 +56,7 @@ import io.keepagent.app.Holder
 import io.keepagent.app.R
 import io.keepagent.app.ui.tabs.AddonsTab
 import io.keepagent.app.ui.tabs.ChatTab
+import io.keepagent.app.ui.tabs.HistorySidebar
 import io.keepagent.app.ui.tabs.ConnectionsTab
 import io.keepagent.app.ui.tabs.ConsoleTab
 import io.keepagent.app.ui.tabs.TestTab
@@ -55,6 +64,7 @@ import io.keepagent.app.ui.tabs.WorkspacesTab
 import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BarChip
 import io.keepagent.app.ui.theme.BarDark
+import io.keepagent.app.ui.theme.BarStone
 import io.keepagent.app.ui.theme.BevelLight
 import io.keepagent.app.ui.theme.TabBrown
 import io.keepagent.app.ui.theme.TabBrownActive
@@ -92,24 +102,37 @@ fun KeepAgentShell() {
     // keeps the header/tiles fixed when the keyboard opens — only the content
     // above the input bar compresses; navigationBarsPadding keeps the input
     // bar above the three nav buttons.
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .imePadding()
-            .navigationBarsPadding()
-            .background(WallBase),
-    ) {
-        // Top bar — header row, then the 6 tab tiles (clears the status bar).
+    // Chat-history sidebar (2026-09-03): state lives in the shell so the
+    // panel can slide in over the FULL screen — header, tabs and all.
+    var showChatHistory by remember { mutableStateOf(false) }
+    // In-app docs (2026-09-03): full-screen markdown reference, opened from
+    // the history sidebar's "docs" button.
+    var showDocs by remember { mutableStateOf(false) }
+
+    Box(modifier = Modifier.fillMaxSize().background(WallBase)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+                .navigationBarsPadding(),
+        ) {
+        // A thin navy sky behind gray crenellations gives the shell the
+        // castle-wall silhouette from the visual direction without wasting
+        // scarce vertical space.
         Column(
             modifier = Modifier
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .background(BarDark),
+                .background(BarStone),
         ) {
-            HeaderBar()
+            CastleBattlements()
+            HeaderBar(
+                historyVisible = selected == 0,
+                onHistory = { showChatHistory = true },
+            )
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(64.dp)
+                    .height(72.dp)
                     .padding(horizontal = 4.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
@@ -159,6 +182,73 @@ fun KeepAgentShell() {
                 3 -> ConsoleTab(app.eventBus, app.eventLog)
                 4 -> AddonsTab(app.addonManager, app.eventBus)
                 else -> ConnectionsTab()
+            }
+        }
+        }
+
+        // Scrim fades in/out; the panel slides in from the left, full height
+        // (2026-09-03: "goes all the way up").
+        // The status-bar inset keeps the panel below the phone's top bar
+        // (2026-09-03): it goes to the top of the app, not under the clock.
+        AnimatedVisibility(
+            visible = showChatHistory,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(180)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickable { showChatHistory = false },
+            )
+        }
+        AnimatedVisibility(
+            visible = showChatHistory,
+            enter = slideInHorizontally(
+                initialOffsetX = { -it },
+                animationSpec = tween(280, easing = FastOutSlowInEasing),
+            ),
+            exit = slideOutHorizontally(
+                targetOffsetX = { -it },
+                animationSpec = tween(220, easing = FastOutSlowInEasing),
+            ),
+        ) {
+            HistorySidebar(
+                modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars),
+                currentSessionId = app.chatController.currentSessionId,
+                onNewChat = {
+                    app.chatController.newSession()
+                    showChatHistory = false
+                },
+                onOpen = { id ->
+                    app.chatController.openSession(id)
+                    showChatHistory = false
+                },
+                onRename = app.chatController::renameSession,
+                onDelete = app.chatController::deleteSession,
+                onOpenDocs = {
+                    showChatHistory = false
+                    showDocs = true
+                },
+                onDismiss = { showChatHistory = false },
+            )
+        }
+
+        // Docs overlay: an opaque full screen (status-bar inset so it sits
+        // under the phone's top bar) that fades in over the shell.
+        AnimatedVisibility(
+            visible = showDocs,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(180)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .background(WallBase),
+            ) {
+                DocsScreen(onBack = { showDocs = false })
             }
         }
     }
@@ -274,13 +364,12 @@ private val TABS = listOf(
 private fun fmtK(n: Int): String = if (n >= 1000) "${(n + 500) / 1000}K" else "$n"
 
 /**
- * Mockup header: model name on the left, two dark status chips on the
- * right (avg speed, context in/out/max + gauge).
+ * Compact status row. Model selection lives in Chat, so it is not repeated
+ * here and the full width remains available for useful run telemetry.
  */
 @Composable
-private fun HeaderBar() {
+private fun HeaderBar(historyVisible: Boolean, onHistory: () -> Unit) {
     val app = Holder.app
-    val model = app.currentModelId()
     val stats by app.chatController.stats.collectAsState()
     val tps = if (stats.elapsedMs > 0) stats.completionTokens * 1000f / stats.elapsedMs else 0f
     val fraction = if (stats.contextLimit > 0)
@@ -290,22 +379,35 @@ private fun HeaderBar() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .background(BarStone)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = model ?: "no model configured",
-            fontSize = 15.sp,
-            color = TextPrimary,
-            maxLines = 1,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
+        // Dedicated chat-history button (2026-09-03): top left of the status
+        // strip, next to the speed readout — opens the full-height sidebar.
+        if (historyVisible) {
+            IconButton(onClick = onHistory, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_history),
+                    contentDescription = "chat history",
+                    tint = TextPrimary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        // Speed health (2026-09-03): red < 14 t/s, yellow 14–29, green 30+;
+        // neutral while no turn has run yet.
+        val speedColor = when {
+            tps <= 0f -> AmberStatus
+            tps < 14f -> Color(0xFFE57373)
+            tps < 30f -> AmberStatus
+            else -> Color(0xFF8BC34A)
+        }
         Text(
             text = if (tps > 0) "Avg. Speed: ${tps.roundToInt()} t/s" else "Avg. Speed: — t/s",
             fontSize = 9.sp,
-            color = AmberStatus,
+            color = speedColor,
             modifier = Modifier
                 .clip(RoundedCornerShape(4.dp))
                 .background(BarChip)
@@ -328,11 +430,35 @@ private fun HeaderBar() {
             )
             Spacer(modifier = Modifier.width(6.dp))
             ContextGauge(fraction)
-            Text(
-                text = "${(fraction * 100).roundToInt()}%",
-                fontSize = 9.sp,
-                color = TextSecondary,
+        }
+    }
+}
+
+/** Gray merlons against a narrow navy night-sky strip. */
+@Composable
+private fun CastleBattlements() {
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(13.dp)
+            .background(BarDark),
+    ) {
+        val merlonWidth = 24.dp.toPx()
+        val gapWidth = 14.dp.toPx()
+        val baseHeight = 6.dp.toPx()
+        drawRect(
+            color = BarStone,
+            topLeft = androidx.compose.ui.geometry.Offset(0f, size.height - baseHeight),
+            size = androidx.compose.ui.geometry.Size(size.width, baseHeight),
+        )
+        var x = 0f
+        while (x < size.width) {
+            drawRect(
+                color = BarStone,
+                topLeft = androidx.compose.ui.geometry.Offset(x, 0f),
+                size = androidx.compose.ui.geometry.Size(merlonWidth, size.height),
             )
+            x += merlonWidth + gapWidth
         }
     }
 }
@@ -340,7 +466,7 @@ private fun HeaderBar() {
 /** Small context gauge ring, echoing the mockup header. */
 @Composable
 private fun ContextGauge(fraction: Float) {
-    Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.size(28.dp), contentAlignment = Alignment.Center) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val stroke = 2.5.dp.toPx()
             val sweep = 360f * fraction.coerceIn(0f, 1f)
@@ -359,6 +485,12 @@ private fun ContextGauge(fraction: Float) {
                 style = Stroke(width = stroke),
             )
         }
+        Text(
+            text = "${(fraction * 100).roundToInt()}%",
+            fontSize = 7.sp,
+            color = TextPrimary,
+            maxLines = 1,
+        )
     }
 }
 
@@ -368,8 +500,8 @@ private fun TabTile(
     iconRes: Int,
     selected: Boolean,
     onClick: () -> Unit,
-    running: Boolean = false,
     modifier: Modifier = Modifier,
+    running: Boolean = false,
 ) {
     // Mockup tiles: brown with a dark glyph; the active tile goes pale.
     val shape = RoundedCornerShape(6.dp)
@@ -394,7 +526,7 @@ private fun TabTile(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(vertical = 6.dp),
+                .padding(vertical = 3.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -402,9 +534,9 @@ private fun TabTile(
                 painter = painterResource(iconRes),
                 contentDescription = null,
                 tint = TabGlyph,
-                modifier = Modifier.size(26.dp),
+                modifier = Modifier.size(25.dp),
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(3.dp))
             Text(
                 text = label,
                 fontSize = 9.sp,
@@ -412,6 +544,7 @@ private fun TabTile(
                 color = if (selected) TabLabelOn else Color(0xFFF3EDE4),
                 textAlign = TextAlign.Center,
                 maxLines = 1,
+                lineHeight = 12.sp,
             )
         }
     }

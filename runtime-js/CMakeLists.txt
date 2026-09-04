@@ -29,6 +29,12 @@ add_library(keepagent_js SHARED
 target_include_directories(keepagent_js PRIVATE ${QJS_DIR})
 target_compile_definitions(keepagent_js PRIVATE _GNU_SOURCE QUICKJS_NG_BUILD)
 target_compile_features(keepagent_js PRIVATE c_std_11)
+# Android 15+ devices may use 16 KiB memory pages. NDK r26 does not opt in
+# automatically, so align every load segment explicitly.
+target_link_options(keepagent_js PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
 
 # JNI headers: on Android the NDK sysroot provides jni.h — no host JDK
 # required. (Host-side builds, if ever, fall back to find_package(JNI).)

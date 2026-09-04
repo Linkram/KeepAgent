@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,8 +30,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -74,6 +77,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.addonsapi.llm.ImagePart
@@ -99,6 +104,8 @@ import java.io.File
 import kotlin.math.max
 import io.keepagent.app.ui.theme.AgentBubble
 import io.keepagent.app.ui.theme.AmberStatus
+import io.keepagent.app.ui.theme.BarChip
+import io.keepagent.app.ui.theme.BarStone
 import io.keepagent.app.ui.theme.BevelLight
 import io.keepagent.app.ui.theme.LinkRead
 import io.keepagent.app.ui.theme.LinkSearch
@@ -106,6 +113,7 @@ import io.keepagent.app.ui.theme.InputStone
 import io.keepagent.app.ui.theme.LinkWrite
 import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
+import io.keepagent.app.ui.theme.ThinkingInset
 import io.keepagent.app.ui.theme.TileStone
 import io.keepagent.app.ui.theme.UserBubble
 import io.keepagent.app.ui.theme.UserBubbleText
@@ -137,10 +145,13 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
     val pendingFiles by controller.pendingFiles.collectAsState()
     val sessionTitle by controller.sessionTitle.collectAsState()
 
-    var showHistory by remember { mutableStateOf(false) }
     var showFilePicker by remember { mutableStateOf(false) }
     var zoomImage by remember { mutableStateOf<ImagePart?>(null) }
+    var showChatSettings by remember { mutableStateOf(false) }
+    // Measured input-bar height (px) — anchors the floating settings popup.
+    var inputBarHeightPx by remember { mutableStateOf(0) }
     val snack = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
 
     val context = LocalContext.current
     val cScope = rememberCoroutineScope()
@@ -189,43 +200,27 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
         }
     }
 
-    val baseUrl = app.settingsStore.getString(SettingsStore.NS_MODEL, "baseUrl")
-    val modelId = app.currentModelId()
+    // Changing the active provider is observable, so Chat immediately adopts
+    // its URL and model instead of waiting for a restart or unrelated redraw.
+    val activeConnection by app.connections.activeConnection.collectAsState()
+    val baseUrl = activeConnection?.baseUrl
+        ?: app.settingsStore.getString(SettingsStore.NS_MODEL, "baseUrl")
+    val modelId = activeConnection?.model?.takeIf { it.isNotBlank() }
+        ?: app.currentModelId()
     LaunchedEffect(baseUrl, modelId) {
         controller.refreshModels(force = baseUrl != null)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-        ChatHeader(
-            modelLabel = modelId ?: "no model configured",
-            models = models,
-            currentModel = modelId,
-            modelsError = modelsError,
-            onModelSelected = { id ->
-                app.settingsStore.setString(SettingsStore.NS_MODEL, "model", id)
-                app.connections.syncActiveFromProfile()
-            },
-            onRetryModels = { controller.refreshModels(force = true) },
-            approvalMode = ApprovalMode.from(
-                app.settingsStore.getString(SettingsStore.NS_GENERAL, "approvalMode"),
-            ),
-            onApprovalMode = { mode ->
-                app.settingsStore.setString(SettingsStore.NS_GENERAL, "approvalMode", mode.name)
-            },
-            fileAccess = FileAccess.from(
-                app.settingsStore.getString(SettingsStore.NS_GENERAL, "fileAccess"),
-            ),
-            onFileAccess = { access ->
-                app.settingsStore.setString(SettingsStore.NS_GENERAL, "fileAccess", access.name)
-                app.fileService.setMode(access)
-            },
-            sessionTitle = sessionTitle,
-            onHistory = { showHistory = true },
-        )
+        // Model / approval / file-access chips moved out of the header into
+        // the bottom-right settings popup (2026-09-03); the header keeps the
+        // dedicated top-left history icon + the current session title.
+        ChatHeader(sessionTitle = sessionTitle)
         HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f), thickness = 1.dp)
 
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
@@ -245,13 +240,15 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
                     )
                 }
             }
-            itemsIndexed(turns, key = { _, t -> t.run.id }) { index, turn ->
+            // Include the stable list position so sessions written by older
+            // builds remain renderable even when timestamp-based run ids
+            // collided during history restoration.
+            itemsIndexed(turns, key = { index, t -> "${t.run.id}-$index" }) { index, turn ->
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     UserBubble(
                         turn = turn,
-                        isLast = index == turns.lastIndex,
                         onCopy = ::copyText,
-                        onEdit = { controller.editLast() },
+                        onEditText = { v -> controller.editTurn(index, v) },
                         onDelete = { controller.deleteTurn(index) },
                         onFork = { controller.forkFrom(index) },
                         onZoomImage = { zoomImage = it },
@@ -274,6 +271,31 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
             }
         }
 
+        // Keep the conversation (and any pending approval card, whose buttons
+        // used to land below the fold) in view: always scroll to the last
+        // item when an approval appears; follow new turns only when the
+        // reader is already near the bottom (2026-09-03).
+        LaunchedEffect(pendingApproval, turns.size) {
+            val info = listState.layoutInfo
+            if (info.totalItemsCount == 0) return@LaunchedEffect
+            if (pendingApproval != null) {
+                listState.animateScrollToItem(info.totalItemsCount - 1)
+                return@LaunchedEffect
+            }
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            if (lastVisible >= info.totalItemsCount - 2) {
+                listState.animateScrollToItem(info.totalItemsCount - 1)
+            }
+        }
+
+        // The input bar's height is measured so the floating settings popup
+        // can anchor just above it (2026-09-03) — the bar grows when
+        // attachments are staged, and the popup must follow.
+        Box(
+            modifier = Modifier.onGloballyPositioned { coords ->
+                inputBarHeightPx = coords.size.height
+            },
+        ) {
         InputBar(
             value = input,
             onValueChange = { input = it },
@@ -295,23 +317,10 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
             onAttachFile = { showFilePicker = true },
             onAttachDocument = { docPicker.launch(arrayOf("*/*")) },
         )
-
-        if (showHistory) {
-            HistoryDialog(
-                currentSessionId = controller.currentSessionId,
-                onNewChat = {
-                    controller.newSession()
-                    showHistory = false
-                },
-                onOpen = { id ->
-                    controller.openSession(id)
-                    showHistory = false
-                },
-                onRename = controller::renameSession,
-                onDelete = controller::deleteSession,
-                onDismiss = { showHistory = false },
-            )
         }
+
+        // The chat-history sidebar itself is rendered by the shell
+        // (ShellScreen), so it can slide in over the full screen (2026-09-03).
         if (showFilePicker) {
             AttachFilePicker(
                 fs = app.fileService,
@@ -328,14 +337,122 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
         }
         }
         SnackbarHost(snack, modifier = Modifier.align(Alignment.BottomStart))
+
+        // Settings popup (2026-09-03): a SMALL floating card anchored bottom
+        // right, just above the input bar — an overlay, so opening it never
+        // pushes or cuts the chat list. The scrim sits ABOVE the chat, so
+        // any outside tap closes it; the panel itself stays interactive.
+        if (showChatSettings) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable { showChatSettings = false },
+            )
+        }
+        // contentAlignment (not Modifier.align) — Modifier.align silently
+        // no-ops for this overlay in this Compose build (2026-09-03 debug).
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomEnd,
+        ) {
+            if (showChatSettings) {
+                Box(
+                    modifier = Modifier.padding(
+                        end = 10.dp,
+                        bottom = with(LocalDensity.current) { (inputBarHeightPx + 24).toDp() },
+                    ),
+                ) {
+                ChatSettingsPanel(
+                    modelLabel = modelId ?: "no model configured",
+                    models = models,
+                    currentModel = modelId,
+                    modelsError = modelsError,
+                    onModelSelected = { id ->
+                        app.settingsStore.setString(SettingsStore.NS_MODEL, "model", id)
+                        app.connections.syncActiveFromProfile()
+                        showChatSettings = false
+                    },
+                    onRetryModels = { controller.refreshModels(force = true) },
+                    approvalMode = ApprovalMode.from(
+                        app.settingsStore.getString(SettingsStore.NS_GENERAL, "approvalMode"),
+                    ),
+                    onApprovalMode = { mode ->
+                        app.settingsStore.setString(SettingsStore.NS_GENERAL, "approvalMode", mode.name)
+                        showChatSettings = false
+                    },
+                    fileAccess = FileAccess.from(
+                        app.settingsStore.getString(SettingsStore.NS_GENERAL, "fileAccess"),
+                    ),
+                    onFileAccess = { access ->
+                        app.settingsStore.setString(SettingsStore.NS_GENERAL, "fileAccess", access.name)
+                        app.fileService.setMode(access)
+                    },
+                    onDismiss = { showChatSettings = false },
+                )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .padding(
+                            end = 10.dp,
+                            bottom = with(LocalDensity.current) { (inputBarHeightPx + 24).toDp() },
+                        )
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TileStone)
+                        .clickable { showChatSettings = true }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_tune),
+                        contentDescription = "chat settings",
+                        tint = TextPrimary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text("settings", fontSize = 12.sp, color = TextPrimary)
+                }
+            }
+        }
         zoomImage?.let { part -> ZoomImageDialog(part, onDismiss = { zoomImage = null }) }
     }
 }
 
 // -- header ------------------------------------------------------------------
 
+/**
+ * Slim chat header (2026-09-03): the active session title. The dedicated
+ * history button lives in the shell's top status strip (top left, next to
+ * the speed readout); model, approval and file-access controls live in the
+ * settings popup above the input bar.
+ */
 @Composable
 private fun ChatHeader(
+    sessionTitle: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 10.dp, top = 2.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = sessionTitle,
+            fontSize = 12.sp,
+            color = TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * The model / approval / file-access popup (2026-09-03): a compact panel at
+ * the bottom right, just above the input bar, opened from the tune button.
+ */
+@Composable
+private fun ChatSettingsPanel(
     modelLabel: String,
     models: List<io.keepagent.addonsapi.llm.LlmModel>,
     currentModel: String?,
@@ -346,16 +463,20 @@ private fun ChatHeader(
     onApprovalMode: (ApprovalMode) -> Unit,
     fileAccess: FileAccess,
     onFileAccess: (FileAccess) -> Unit,
-    sessionTitle: String,
-    onHistory: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    Row(
+    // 2026-09-03: the card SELF-SIZES to the three controls. (fillMaxSize
+    // stretched it to the full chat height, leaving a huge empty slab —
+    // no fixed width, no matchParentSize shadow.) Closes on any outside
+    // tap (scrim) or on a selection.
+    Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .clip(RoundedCornerShape(10.dp))
+            .background(BarChip)
+            .border(width = 1.dp, color = BevelLight.copy(alpha = 0.5f), shape = RoundedCornerShape(10.dp))
+            .padding(7.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         ModelChip(modelLabel, models, currentModel, modelsError, onModelSelected, onRetryModels)
         ModeChip(
@@ -374,10 +495,6 @@ private fun ChatHeader(
                 onFileAccess(FileAccess.entries.first { it.name.lowercase() == s })
             },
         )
-        Chip(
-            text = "history: ${sessionTitle.take(24)}",
-            onClick = onHistory,
-        )
     }
 }
 
@@ -395,7 +512,7 @@ private fun ModelChip(
     var typed by remember { mutableStateOf("") }
     Box {
         Chip(
-            text = "model: $modelLabel",
+            text = "Model: $modelLabel  ▾",
             onClick = {
                 typing = false
                 typed = currentModel ?: ""
@@ -621,15 +738,19 @@ private fun formatElapsed(ms: Long): String =
 @Composable
 private fun UserBubble(
     turn: ChatController.Turn,
-    isLast: Boolean,
     onCopy: (String) -> Unit,
-    onEdit: () -> Unit,
+    onEditText: (String) -> Unit,
     onDelete: () -> Unit,
     onFork: () -> Unit,
     onZoomImage: (ImagePart) -> Unit,
     onOpenFile: (String) -> Unit,
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
+    // Tapping the message reveals an action row (edit / branch / copy /
+    // delete) — 2026-09-03. Editing an older message rolls the chat back to
+    // it and continues with the updated text; branch starts a new chat from
+    // this message.
+    var actionsOpen by remember { mutableStateOf(false) }
+    var editDialogOpen by remember { mutableStateOf(false) }
     var showPrompt by remember { mutableStateOf(false) }
     val text = turn.userText
 
@@ -638,37 +759,6 @@ private fun UserBubble(
         horizontalAlignment = Alignment.End,
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Row(horizontalArrangement = Arrangement.End) {
-            Text(
-                text = "⋮",
-                fontSize = 15.sp,
-                color = TextSecondary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable { menuOpen = !menuOpen }
-                    .padding(horizontal = 10.dp, vertical = 1.dp),
-            )
-        }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-            DropdownMenuItem(
-                text = { Text("Copy", fontSize = 12.sp) },
-                onClick = { onCopy(text.ifEmpty { "(no text)" }); menuOpen = false },
-            )
-            if (isLast && text.isNotBlank()) {
-                DropdownMenuItem(
-                    text = { Text("Edit", fontSize = 12.sp) },
-                    onClick = { onEdit(); menuOpen = false },
-                )
-            }
-            DropdownMenuItem(
-                text = { Text("Fork from here", fontSize = 12.sp) },
-                onClick = { onFork(); menuOpen = false },
-            )
-            DropdownMenuItem(
-                text = { Text("Delete", fontSize = 12.sp, color = LinkRead) },
-                onClick = { onDelete(); menuOpen = false },
-            )
-        }
         // Mockup bubble: wide sage block with a speech tail at bottom-right.
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Column(horizontalAlignment = Alignment.End) {
@@ -677,6 +767,7 @@ private fun UserBubble(
                         .fillMaxWidth(0.82f)
                         .clip(RoundedCornerShape(12.dp, 4.dp, 12.dp, 12.dp))
                         .background(UserBubble)
+                        .clickable { actionsOpen = !actionsOpen }
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -701,6 +792,44 @@ private fun UserBubble(
                 }
                 BubbleTail(color = UserBubble, tailEnd = true, modifier = Modifier.padding(start = 14.dp))
             }
+        }
+        if (actionsOpen) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BubbleActionButton(R.drawable.ic_edit, "edit") {
+                        editDialogOpen = true
+                    }
+                    BubbleActionButton(R.drawable.ic_branch, "branch") {
+                        actionsOpen = false
+                        onFork()
+                    }
+                    BubbleActionButton(null, "copy") {
+                        onCopy(text.ifEmpty { "(no text)" })
+                        actionsOpen = false
+                    }
+                    BubbleActionButton(R.drawable.ic_delete, "delete") {
+                        actionsOpen = false
+                        onDelete()
+                    }
+                }
+            }
+        }
+        if (editDialogOpen) {
+            EditMessageDialog(
+                original = text,
+                onConfirm = { v ->
+                    editDialogOpen = false
+                    actionsOpen = false
+                    onEditText(v)
+                },
+                onDismiss = { editDialogOpen = false },
+            )
         }
         if (turn.sentPrompt.isNotBlank() && turn.sentPrompt != text) {
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
@@ -731,6 +860,73 @@ private fun UserBubble(
             }
         }
     }
+}
+
+/** Compact action pill in the message action row (icon + label). */
+@Composable
+private fun BubbleActionButton(iconRes: Int?, label: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(TileStone)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        if (iconRes != null) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = TextPrimary,
+                modifier = Modifier.size(11.dp),
+            )
+        }
+        Text(label, fontSize = 10.sp, color = TextPrimary)
+    }
+}
+
+/**
+ * Edit-message dialog (2026-09-03): confirm to roll the conversation back
+ * to this message and continue with the updated text.
+ */
+@Composable
+private fun EditMessageDialog(
+    original: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(original) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Edit message", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+        },
+        text = {
+            TextField(
+                value = text,
+                onValueChange = { text = it },
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.TextFieldDefaults.colors(
+                    focusedContainerColor = TileStone,
+                    unfocusedContainerColor = TileStone,
+                    focusedIndicatorColor = BevelLight,
+                    unfocusedIndicatorColor = BevelLight,
+                ),
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(text.trim()) },
+                enabled = text.isNotBlank(),
+            ) {
+                Text("send & continue", fontSize = 12.sp)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("cancel", fontSize = 12.sp) }
+        },
+    )
 }
 
 /** Full-screen-ish image zoom for message attachments. */
@@ -862,7 +1058,8 @@ private fun ThinkingBlock(label: String, content: String) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(TileStone)
+            .background(ThinkingInset)
+            .border(1.dp, BevelLight, RoundedCornerShape(8.dp))
             .clickable(onClick = { expanded = !expanded })
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
@@ -1232,30 +1429,30 @@ private fun InputBar(
 
 // -- chat history (M1.3) ------------------------------------------------------
 
-/** Lists saved chats: open (continue), rename, delete (with confirm), new chat. */
+/**
+ * Chat history as a side panel from the left (2026-09-03): rendered by the
+ * shell (internal, not private) so it can slide in over the full screen —
+ * header and tabs included. Every chat row has rename + delete buttons;
+ * tapping the row opens that chat. The scrim is drawn by the shell.
+ *
+ * Split across HistorySessionList / HistorySessionRow composables: the
+ * single-megamethod form made D8's verifier reject the dex (VerifyError on
+ * launch, 2026-09-03) — smaller composables keep register pressure low.
+ */
 @Composable
-private fun HistoryDialog(
+internal fun HistorySidebar(
+    modifier: Modifier = Modifier,
     currentSessionId: String?,
     onNewChat: () -> Unit,
     onOpen: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
+    onOpenDocs: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val controller = Holder.app.chatController
-    val cScope = rememberCoroutineScope()
     val sessions = remember { mutableStateOf<List<ChatSession>?>(null) }
-    var renamingId by remember { mutableStateOf<String?>(null) }
-    var renameText by remember { mutableStateOf("") }
-    var deletingId by remember { mutableStateOf<String?>(null) }
-    // Multi-select delete (M1.4h).
-    var multiSelect by remember { mutableStateOf(false) }
-    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var confirmMulti by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        sessions.value = withContext(Dispatchers.IO) { controller.listSessions() }
-    }
+    val cScope = rememberCoroutineScope()
 
     fun reload() {
         cScope.launch {
@@ -1263,256 +1460,249 @@ private fun HistoryDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("Chats", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-        },
-        text = {
-            val list = sessions.value
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    LaunchedEffect(Unit) {
+        reload()
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxHeight()
+                .width(300.dp)
+                .background(BarStone)
+                .padding(10.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Button(onClick = {
-                        onNewChat()
-                        reload()
-                    }) {
-                        Text("new chat")
-                    }
-                    TextButton(onClick = {
-                        multiSelect = !multiSelect
-                        selectedIds = emptySet()
-                        confirmMulti = false
-                    }) {
-                        Text(
-                            if (multiSelect) "done selecting" else "select several",
-                            fontSize = 11.sp,
-                            color = TextSecondary,
-                        )
-                    }
-                }
-                if (multiSelect) {
-                    TextButton(
-                        onClick = { confirmMulti = true },
-                        enabled = selectedIds.isNotEmpty(),
+                    Text("Chats", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            "delete selected (${selectedIds.size})",
-                            fontSize = 11.sp,
-                            color = AmberStatus,
-                        )
-                    }
-                }
-                var query by remember { mutableStateOf("") }
-                if (list != null) {
-                    TextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        placeholder = { Text("search chats…", fontSize = 12.sp) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = androidx.compose.material3.TextFieldDefaults.colors(
-                            focusedContainerColor = TileStone,
-                            unfocusedContainerColor = TileStone,
-                            focusedIndicatorColor = BevelLight,
-                            unfocusedIndicatorColor = BevelLight,
-                        ),
-                    )
-                }
-                if (confirmMulti) {
-                    // Multi-delete confirmation replaces the list (M1.4h).
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            "Delete ${selectedIds.size} chat(s)?",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = TextPrimary,
-                        )
-                        Text(
-                            "This cannot be undone.",
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                confirmMulti = false
-                                selectedIds.forEach { onDelete(it) }
-                                selectedIds = emptySet()
-                                multiSelect = false
-                                reload()
-                            }) {
-                                Text("delete")
-                            }
-                            TextButton(onClick = { confirmMulti = false }) {
-                                Text("cancel")
-                            }
+                        Button(onClick = {
+                            onNewChat()
+                            reload()
+                        }) {
+                            Text("new", fontSize = 11.sp)
                         }
-                    }
-                } else {
-                val del = list?.firstOrNull { it.id == deletingId }
-                if (del != null) {
-                    // Delete confirmation replaces the list.
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            "Delete this chat?",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = TextPrimary,
-                        )
-                        Text(
-                            "'${del.title}' — ${del.turns.size} messages. This cannot be undone.",
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                deletingId = null
-                                onDelete(del.id)
-                                reload()
-                            }) {
-                                Text("delete")
-                            }
-                            TextButton(onClick = { deletingId = null }) {
-                                Text("cancel")
-                            }
+                        // In-app docs (2026-09-03): opens the bundled markdown.
+                        Button(onClick = onOpenDocs) {
+                            Text("docs", fontSize = 11.sp)
                         }
-                    }
-                } else if (list == null) {
-                    Text("loading…", fontSize = 12.sp, color = TextSecondary)
-                } else if (list.isEmpty()) {
-                    Text(
-                        "no saved chats yet — a chat is saved once it gets a reply.",
-                        fontSize = 12.sp,
-                        color = TextSecondary,
-                    )
-                } else {
-                    val visible = list.filter { s ->
-                        query.isBlank() ||
-                            s.title.contains(query, true) ||
-                            s.turns.any { t -> t.userText.contains(query, true) }
-                    }
-                    if (visible.isEmpty()) {
-                        Text("no matches.", fontSize = 12.sp, color = TextSecondary)
-                    }
-                    visible.forEach { s ->
-                        val isCurrent = s.id == currentSessionId
-                        if (renamingId == s.id) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                TextField(
-                                    value = renameText,
-                                    onValueChange = { renameText = it },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f),
-                                    colors = androidx.compose.material3.TextFieldDefaults.colors(
-                                        focusedContainerColor = TileStone,
-                                        unfocusedContainerColor = TileStone,
-                                        focusedIndicatorColor = BevelLight,
-                                        unfocusedIndicatorColor = BevelLight,
-                                    ),
-                                )
-                                TextButton(onClick = {
-                                    renamingId = null
-                                    onRename(s.id, renameText)
-                                    reload()
-                                }) {
-                                    Text("save")
-                                }
-                                TextButton(onClick = { renamingId = null }) {
-                                    Text("cancel")
-                                }
-                            }
-                        } else {
-                            val isSel = s.id in selectedIds
-                            Column(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(
-                                        if (multiSelect && isSel) TileStone
-                                        else androidx.compose.ui.graphics.Color.Transparent,
-                                    )
-                                    .clickable {
-                                        if (multiSelect) {
-                                            selectedIds =
-                                                if (isSel) selectedIds - s.id else selectedIds + s.id
-                                        } else {
-                                            onOpen(s.id)
-                                        }
-                                    }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
-                                    if (multiSelect) {
-                                        Text(
-                                            text = if (isSel) "☑" else "☐",
-                                            fontSize = 12.sp,
-                                            color = if (isSel) TextPrimary else TextSecondary,
-                                        )
-                                    }
-                                    Text(
-                                        text = s.title,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
-                                        color = if (isCurrent) LinkSearch else TextPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    if (!multiSelect) {
-                                        IconButton(
-                                            onClick = {
-                                                renamingId = s.id
-                                                renameText = s.title
-                                            },
-                                            modifier = Modifier.size(22.dp),
-                                        ) {
-                                            Icon(
-                                                painter = painterResource(R.drawable.ic_edit),
-                                                contentDescription = "rename",
-                                                tint = TextSecondary,
-                                                modifier = Modifier.size(11.dp),
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = { deletingId = s.id },
-                                            modifier = Modifier.size(22.dp),
-                                        ) {
-                                            Icon(
-                                                painter = painterResource(R.drawable.ic_delete),
-                                                contentDescription = "delete",
-                                                tint = AmberStatus,
-                                                modifier = Modifier.size(11.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                                Text(
-                                    text = "${timeAgo(s.updatedAt)} · ${s.turns.size} messages",
-                                    fontSize = 10.sp,
-                                    color = TextSecondary,
-                                )
-                            }
+                        IconButton(onClick = onDismiss, modifier = Modifier.size(26.dp)) {
+                            Text("✕", fontSize = 12.sp, color = TextSecondary)
                         }
                     }
                 }
+                HistorySessionList(
+                    sessions = sessions.value,
+                    currentSessionId = currentSessionId,
+                    onOpen = onOpen,
+                    onRename = onRename,
+                    onDelete = onDelete,
+                    onReload = ::reload,
+                )
+            }
+        }
+    }
+}
+
+/** Search + session list with per-row rename/delete state. */
+@Composable
+private fun HistorySessionList(
+    sessions: List<ChatSession>?,
+    currentSessionId: String?,
+    onOpen: (String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onReload: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var renamingId by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var deletingId by remember { mutableStateOf<String?>(null) }
+
+    val list = sessions
+    // Search stays visible even when the result set is empty, so a bad
+    // query can always be cleared.
+    if (list != null) {
+        TextField(
+            value = query,
+            onValueChange = { query = it },
+            placeholder = { Text("search chats…", fontSize = 12.sp) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            colors = androidx.compose.material3.TextFieldDefaults.colors(
+                focusedContainerColor = TileStone,
+                unfocusedContainerColor = TileStone,
+                focusedIndicatorColor = BevelLight,
+                unfocusedIndicatorColor = BevelLight,
+            ),
+        )
+    }
+    val del = list?.firstOrNull { it.id == deletingId }
+    if (del != null) {
+        // Delete confirmation replaces the list.
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                "Delete this chat?",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+            )
+            Text(
+                "'${del.title}' — ${del.turns.size} messages. This cannot be undone.",
+                fontSize = 12.sp,
+                color = TextSecondary,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    deletingId = null
+                    onDelete(del.id)
+                    onReload()
+                }) {
+                    Text("delete")
+                }
+                TextButton(onClick = { deletingId = null }) {
+                    Text("cancel")
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("close")
+        }
+        return
+    }
+    if (list == null) {
+        Text("loading…", fontSize = 12.sp, color = TextSecondary)
+        return
+    }
+    if (list.isEmpty()) {
+        Text(
+            "no saved chats yet — a chat is saved once it gets a reply.",
+            fontSize = 12.sp,
+            color = TextSecondary,
+        )
+        return
+    }
+    val visible = list.filter { s ->
+        query.isBlank() ||
+            s.title.contains(query, true) ||
+            s.turns.any { t -> t.userText.contains(query, true) }
+    }
+    if (visible.isEmpty()) {
+        Text("no matches.", fontSize = 12.sp, color = TextSecondary)
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        visible.forEach { s ->
+            HistorySessionRow(
+                session = s,
+                isCurrent = s.id == currentSessionId,
+                isRenaming = renamingId == s.id,
+                renameText = renameText,
+                onRenameText = { renameText = it },
+                onStartRename = {
+                    renamingId = s.id
+                    renameText = s.title
+                },
+                onCancelRename = { renamingId = null },
+                onSaveRename = {
+                    renamingId = null
+                    onRename(s.id, renameText)
+                    onReload()
+                },
+                onDelete = { deletingId = s.id },
+                onOpen = { onOpen(s.id) },
+            )
+        }
+    }
+}
+
+/** One chat row: tap to open, pencil to rename, trash to delete. */
+@Composable
+private fun HistorySessionRow(
+    session: ChatSession,
+    isCurrent: Boolean,
+    isRenaming: Boolean,
+    renameText: String,
+    onRenameText: (String) -> Unit,
+    onStartRename: () -> Unit,
+    onCancelRename: () -> Unit,
+    onSaveRename: () -> Unit,
+    onDelete: () -> Unit,
+    onOpen: () -> Unit,
+) {
+    if (isRenaming) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TextField(
+                value = renameText,
+                onValueChange = onRenameText,
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                colors = androidx.compose.material3.TextFieldDefaults.colors(
+                    focusedContainerColor = TileStone,
+                    unfocusedContainerColor = TileStone,
+                    focusedIndicatorColor = BevelLight,
+                    unfocusedIndicatorColor = BevelLight,
+                ),
+            )
+            TextButton(onClick = onSaveRename) {
+                Text("save")
             }
-        },
-    )
+            TextButton(onClick = onCancelRename) {
+                Text("cancel")
+            }
+        }
+        return
+    }
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = session.title,
+                fontSize = 12.sp,
+                fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isCurrent) LinkSearch else TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onStartRename, modifier = Modifier.size(22.dp)) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_edit),
+                    contentDescription = "rename",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(11.dp),
+                )
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(22.dp)) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_delete),
+                    contentDescription = "delete",
+                    tint = AmberStatus,
+                    modifier = Modifier.size(11.dp),
+                )
+            }
+        }
+        Text(
+            text = "${timeAgo(session.updatedAt)} · ${session.turns.size} messages",
+            fontSize = 10.sp,
+            color = TextSecondary,
+        )
+    }
 }
 
 // -- workspace file/folder picker (M1.3) --------------------------------------
@@ -1679,5 +1869,3 @@ private fun timeAgo(ts: Long): String {
         else -> "${s / 86400} d ago"
     }
 }
-
-

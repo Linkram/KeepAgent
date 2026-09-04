@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Horizontal sliders (chat settings: model / approval / files). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFEDEDED"
+        android:pathData="M3,6.5 h18 v1.6 h-18 z M3,11.2 h18 v1.6 h-18 z M3,15.9 h18 v1.6 h-18 z M5,4.4 a2.6,2.6 0 1,0 0.01,0 z M16,9.1 a2.6,2.6 0 1,0 0.01,0 z M9,13.8 a2.6,2.6 0 1,0 0.01,0 z" />
+</vector>

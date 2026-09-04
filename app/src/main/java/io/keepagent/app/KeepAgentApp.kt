@@ -2,6 +2,7 @@ package io.keepagent.app
 
 import android.app.Application
 import android.content.Intent
+import android.os.Build
 import io.keepagent.addons.provideropenai.ProviderOpenAiAddon
 import io.keepagent.addons.toolscore.ToolsCoreAddon
 import io.keepagent.core.agent.AgentLoop
@@ -60,6 +61,15 @@ class KeepAgentApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The `:js` helper process runs only JsSandboxService (ADR-0001).
+        // Android still instantiates this Application class in that process,
+        // and bootstrapping there re-runs the whole add-on stack a second
+        // time — discovery, sandbox init, and even a second bind to the
+        // sandbox service — double-writing the shared event stream (seen on
+        // device 2026-09-03: duplicated "plugin host ready" blocks on every
+        // launch). The service is fully self-contained over AIDL, so the
+        // helper process needs none of the app bootstrap.
+        if (currentProcessName().endsWith(":js")) return
         Holder.init(this)
 
         storage = Storage(this)
@@ -140,7 +150,10 @@ class KeepAgentApp : Application() {
         // App-level controller: the conversation survives tab switches.
         chatController = ChatController(this)
 
-        eventBus.emit(EventKind.SYSTEM, "app", "KeepAgent 0.1.0-m1 starting")
+        val versionName = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrNull() ?: "dev"
+        eventBus.emit(EventKind.SYSTEM, "app", "KeepAgent $versionName starting")
         // Workspace + add-on discovery run off the main thread; the bus and
         // the manager are thread-safe for this.
         mainScope.launch(Dispatchers.IO) {
@@ -153,6 +166,15 @@ class KeepAgentApp : Application() {
             }
         }
     }
+
+    /** This process's name ("io.keepagent" or "io.keepagent:js"). */
+    private fun currentProcessName(): String =
+        if (Build.VERSION.SDK_INT >= 28) {
+            android.os.Process.myProcessName() ?: ""
+        } else {
+            runCatching { File("/proc/self/cmdline").readText().trim('\u0000', ' ') }
+                .getOrDefault("")
+        }
 
     /** Engine mode for Tier-2 sandboxes (setting: general/engineMode). */
     enum class EngineMode {
@@ -177,11 +199,7 @@ class KeepAgentApp : Application() {
     fun ensureAgentForeground() {
         try {
             val intent = Intent(this, AgentForegroundService::class.java)
-            if (android.os.Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
+            startForegroundService(intent)
         } catch (_: Exception) {
         }
     }

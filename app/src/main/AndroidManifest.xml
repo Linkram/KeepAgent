@@ -10,6 +10,9 @@
     <application
         android:name=".KeepAgentApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@drawable/ic_tab_chat"
         android:label="KeepAgent"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
@@ -28,6 +31,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
                 <data android:mimeType="text/plain" />
                 <data android:mimeType="text/html" />
             </intent-filter>
@@ -35,6 +39,7 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="text/html" />
             </intent-filter>
         </activity>
 

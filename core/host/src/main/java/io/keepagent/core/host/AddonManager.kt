@@ -9,9 +9,13 @@ import io.keepagent.core.events.EventBus
 import io.keepagent.core.events.EventKind
 import io.keepagent.core.settings.SettingsStore
 import io.keepagent.core.storage.Storage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.io.File
 
@@ -57,6 +61,12 @@ class AddonManager(
     private val _records = MutableStateFlow<List<AddonRecord>>(emptyList())
     /** Live view for the UI (Add-ons tab). */
     val recordsFlow: StateFlow<List<AddonRecord>> = _records.asStateFlow()
+
+    /**
+     * UI-triggered lifecycle work (enable/disable) runs here, off the main
+     * thread — see [setAddonEnabled] for why the main thread must stay free.
+     */
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val registryRef: CapabilityRegistry get() = registry
 
@@ -185,8 +195,21 @@ class AddonManager(
      * User toggles an add-on on/off. Disabling removes its tools + provider
      * from the registry (and shuts down its sandbox, if any); enabling
      * re-runs initialization. The choice persists across app restarts.
+     *
+     * Runs on an IO dispatcher: Tier-2 enabling binds the `:js` helper
+     * service, whose `ServiceConnection.onServiceConnected` is delivered on
+     * the *main* looper. Blocking the main thread on the bind latch (the
+     * M1.4 behavior) deadlocked against that delivery — 5 s input stall,
+     * ANR, app restart, guaranteed in-process fallback (2026-09-03 device
+     * test). Off the main thread the looper stays free to deliver the
+     * connection. UI state lands via the records StateFlow.
      */
     fun setAddonEnabled(id: String, enabled: Boolean) {
+        ioScope.launch { setAddonEnabledLocked(id, enabled) }
+    }
+
+    @Synchronized
+    private fun setAddonEnabledLocked(id: String, enabled: Boolean) {
         val record = records.values.firstOrNull { it.id == id || it.dirName == id } ?: return
         val manifest = record.manifest ?: return
         if (record.status == AddonStatus.INVALID) return
@@ -280,6 +303,7 @@ class AddonManager(
         }
         runtimes[record.dirName] = runtime
         record.status = AddonStatus.INITIALIZED
+        record.statusDetail = null
         eventBus.emit(EventKind.ADDON, "host", "add-on ${manifest.id} initialized in quickjs-ng sandbox")
         refreshRecords()
     }
@@ -326,7 +350,21 @@ class AddonManager(
         return result
     }
 
+    /**
+     * Publish a **copy** of every record. [AddonRecord] is a mutable data
+     * class and the live [records] map holds the same instances across
+     * refreshes, so republishing them as-is is structurally equal to the
+     * previous list and `MutableStateFlow` conflates the update away — the
+     * Add-ons tab never sees a status or tool change (2026-09-03 device
+     * test: enable/disable looked dead, the Tier-2 "run tool" button never
+     * appeared). Copying forces a new instance per record so every refresh
+     * is observably different and always propagates.
+     */
     private fun refreshRecords() {
-        _records.value = records.values.toList()
+        _records.value = records.values.map { rec ->
+            // copy(tools = toList()) — a plain copy() would still share the
+            // live tools list, and a tools-only change would conflate away.
+            rec.copy(tools = rec.tools.toMutableList())
+        }
     }
 }

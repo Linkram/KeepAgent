@@ -11,6 +11,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * An API connection (spec §14 Q4 surface, M1.1): a named OpenAI-compatible
@@ -55,6 +57,10 @@ data class ApiConnection(
 class ConnectionsStore(private val settings: SettingsStore) {
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val _activeConnection = MutableStateFlow(active())
+
+    /** Observable source of truth for screens that depend on the active endpoint. */
+    val activeConnection = _activeConnection.asStateFlow()
 
     fun list(): List<ApiConnection> {
         val raw = settings.getString(SettingsStore.NS_CONNECTIONS, KEY_LIST) ?: return emptyList()
@@ -90,7 +96,10 @@ class ConnectionsStore(private val settings: SettingsStore) {
 
     fun update(conn: ApiConnection) {
         persist(list().map { if (it.id == conn.id) conn else it })
-        if (activeId() == conn.id) mirrorToProfile(conn)
+        if (activeId() == conn.id) {
+            mirrorToProfile(conn)
+            _activeConnection.value = conn
+        }
     }
 
     fun remove(id: String) {
@@ -107,6 +116,7 @@ class ConnectionsStore(private val settings: SettingsStore) {
         }
         settings.setString(SettingsStore.NS_CONNECTIONS, KEY_ACTIVE, conn.id)
         mirrorToProfile(conn)
+        _activeConnection.value = conn
     }
 
     /**
@@ -135,6 +145,7 @@ class ConnectionsStore(private val settings: SettingsStore) {
         settings.setString(SettingsStore.NS_MODEL, "baseUrl", "")
         settings.setString(SettingsStore.NS_MODEL, "apiKey", "")
         settings.setString(SettingsStore.NS_MODEL, "model", "")
+        _activeConnection.value = null
     }
 
     private fun persist(conns: List<ApiConnection>) {

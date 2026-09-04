@@ -14,4 +14,6 @@ dependencies {
     api(project(":core:events"))
     api(libs.kotlinx.coroutines.core)
     api(libs.kotlinx.serialization.json)
+
+    testImplementation(kotlin("test"))
 }

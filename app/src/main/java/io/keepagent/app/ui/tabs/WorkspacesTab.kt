@@ -66,6 +66,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -79,7 +80,9 @@ fun WorkspacesTab() {
     var list by remember { mutableStateOf<List<WorkspaceInfo>>(emptyList()) }
     var message by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
-    var openWs by remember { mutableStateOf<String?>(null) }
+    // A workspace tab is primarily a file workspace, not a project chooser.
+    // Open the active project immediately; the compact chooser is one tap away.
+    var openWs by remember { mutableStateOf<String?>(app.workspaceManager.activeName()) }
     var deleteTarget by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var renameTarget by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var renameName by remember { mutableStateOf("") }
@@ -127,14 +130,24 @@ fun WorkspacesTab() {
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text("Workspaces", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-            Text(
-                text = "File tools run against the active workspace. Tap a workspace to browse, view, and edit its files. " +
-                    "File access: ${fileAccess.name.lowercase()} " +
-                    "(Workspace = confined to root; Full = whole storage).",
-                fontSize = 11.sp,
-                color = TextSecondary,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Switch project", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Text("Choose which codebase the agent and file tools use", fontSize = 10.sp, color = TextSecondary)
+                }
+                Text(
+                    text = "${list.size} projects · ${fileAccess.name.lowercase()} access",
+                    fontSize = 9.sp,
+                    color = TextSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(TileStone)
+                        .padding(horizontal = 7.dp, vertical = 5.dp),
+                )
+            }
+            active?.let {
+                Text("Agent workspace: $it", fontSize = 10.sp, color = AmberStatus)
+            }
         }
         Row(
             modifier = Modifier
@@ -146,7 +159,7 @@ fun WorkspacesTab() {
             TextField(
                 value = name,
                 onValueChange = { name = it },
-                placeholder = { Text("workspace name", fontSize = 13.sp) },
+                placeholder = { Text("New project name", fontSize = 13.sp) },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 colors = androidx.compose.material3.TextFieldDefaults.colors(
@@ -156,18 +169,22 @@ fun WorkspacesTab() {
                     unfocusedIndicatorColor = BevelLight,
                 ),
             )
-            Button(onClick = {
+            Button(
+                enabled = name.isNotBlank(),
+                onClick = {
                 val created = app.workspaceManager.create(name)
                 message = if (created != null) {
+                    app.workspaceManager.setActive(created)
+                    app.fileService.setRoot(app.workspaceManager.activeRoot())
+                    openWs = created
                     "created: $created"
                 } else {
                     "name unavailable or already exists"
                 }
                 name = ""
                 scope.launch { refresh() }
-            }) {
-                Text("Create")
-            }
+                },
+            ) { Text("+ Create") }
         }
         message?.let { msg ->
             Text(
@@ -185,6 +202,24 @@ fun WorkspacesTab() {
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (list.isEmpty()) {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 36.dp, horizontal = 18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text("No projects yet", fontSize = 14.sp, color = TextPrimary)
+                        Text(
+                            "Create one above. The agent's file tools will be rooted there.",
+                            fontSize = 11.sp,
+                            color = TextSecondary,
+                        )
+                    }
+                }
+            }
             items(list, key = { it.name }) { ws ->
                 WorkspaceRow(
                     info = ws,
@@ -281,7 +316,7 @@ private fun WorkspaceRow(
     onRename: () -> Unit,
 ) {
     val shape = RoundedCornerShape(8.dp)
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
@@ -292,70 +327,57 @@ private fun WorkspaceRow(
                 shape = shape,
             )
             .clickable(onClick = onSelect)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+            .padding(horizontal = 11.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = info.name,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = TextPrimary,
-            )
-            if (active) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "  active",
-                    fontSize = 11.sp,
-                    color = AmberStatus,
+                    text = info.name,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary,
                 )
+                if (active) {
+                    Text("  active", fontSize = 10.sp, color = AmberStatus)
+                }
             }
-        }
-        Text(
-            text = "${info.fileCount} files · ${formatSize(info.sizeBytes)}",
-            fontSize = 11.sp,
-            color = TextSecondary,
-        )
-        SelectionContainer {
             Text(
-                text = info.root,
+                text = "${info.fileCount} files · ${formatSize(info.sizeBytes)}",
                 fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
                 color = TextSecondary,
             )
         }
-        Row(
-            modifier = Modifier.padding(top = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
+        Text(
+            text = "rename",
+            fontSize = 10.sp,
+            color = TextSecondary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(onClick = onRename)
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+        )
+        if (!active) {
             Text(
-                text = "rename",
-                fontSize = 11.sp,
-                color = TextPrimary,
+                text = "delete",
+                fontSize = 10.sp,
+                color = AmberStatus,
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
-                    .clickable(onClick = onRename)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                    .clickable(onClick = onDelete)
+                    .padding(horizontal = 6.dp, vertical = 5.dp),
             )
-            if (!active) {
-                Text(
-                    text = "delete",
-                    fontSize = 11.sp,
-                    color = AmberStatus,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .clickable(onClick = onDelete)
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                )
-            }
         }
+        Text("Open ›", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
     }
 }
 
 private fun formatSize(bytes: Long): String = when {
     bytes < 1024 -> "${bytes} B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-    bytes < 1024L * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
-    else -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+    bytes < 1024L * 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
+    else -> String.format(Locale.ROOT, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
 }
 
 // -- file browser (M1.2, F-007 extension) ------------------------------------
@@ -387,6 +409,7 @@ private fun WorkspaceExplorer(
     var query by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf("name") } // name | size | date
     var newName by remember { mutableStateOf("") }
+    var createOpen by remember { mutableStateOf(false) }
 
     // Git panel state.
     var gitOpen by remember { mutableStateOf(false) }
@@ -512,32 +535,34 @@ private fun WorkspaceExplorer(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+                .padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             Text(
-                text = "← workspaces",
-                fontSize = 12.sp,
-                color = LinkRead,
+                text = "$wsName  ▾",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(TileStoneSelected)
                     .clickable(onClick = onBack)
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = wsName,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary,
-                )
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 val parts = dir.split("/").filter { it.isNotEmpty() }
                 if (parts.isEmpty()) {
                     Text(
-                        text = "  (root)",
+                        text = "/ root",
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         color = TextSecondary,
@@ -560,6 +585,16 @@ private fun WorkspaceExplorer(
                     }
                 }
             }
+            Text(
+                text = if (createOpen) "close" else "+ new",
+                fontSize = 11.sp,
+                color = TextPrimary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(TileStone)
+                    .clickable { createOpen = !createOpen }
+                    .padding(horizontal = 9.dp, vertical = 7.dp),
+            )
         }
 
         notice?.let { n ->
@@ -830,12 +865,15 @@ private fun WorkspaceExplorer(
                     val r = if (isDir) fs.createDir(rel) else fs.createFile(rel, "")
                     withContext(Dispatchers.Main) {
                         notice = if (r.ok) r.text else r.error
-                        if (r.ok) newName = ""
+                        if (r.ok) {
+                            newName = ""
+                            createOpen = false
+                        }
                         loadDir()
                     }
                 }
             }
-            Row(
+            if (createOpen) Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 2.dp),

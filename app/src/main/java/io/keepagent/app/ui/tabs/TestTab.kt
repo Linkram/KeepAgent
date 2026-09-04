@@ -1,5 +1,6 @@
 package io.keepagent.app.ui.tabs
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -80,6 +81,7 @@ import java.nio.ByteOrder
  * internal storage). Capture the page and the screenshot rides the next
  * chat message as an image attachment.
  */
+@SuppressLint("SetJavaScriptEnabled") // The local web test runner must execute workspace JavaScript.
 @Composable
 fun TestTab(onGotoChat: () -> Unit) {
     val app = Holder.app
@@ -260,22 +262,30 @@ fun TestTab(onGotoChat: () -> Unit) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Test", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                Spacer(modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { fullscreen = true }) {
-                    Text("fullscreen", fontSize = 11.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Preview & debug", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Text(
+                        "Run a workspace page, inspect it, then send evidence to the agent",
+                        fontSize = 9.sp,
+                        color = TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                OutlinedButton(onClick = { setLandscape(!landscape) }) {
-                    Text(if (landscape) "portrait" else "landscape", fontSize = 11.sp)
+                Spacer(modifier = Modifier.width(6.dp))
+                CompactTestAction("full") { fullscreen = true }
+                Spacer(modifier = Modifier.width(6.dp))
+                CompactTestAction(if (landscape) "upright" else "rotate") {
+                    setLandscape(!landscape)
                 }
             }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
+                    .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -292,48 +302,44 @@ fun TestTab(onGotoChat: () -> Unit) {
                         unfocusedIndicatorColor = BevelLight,
                     ),
                 )
-                OutlinedButton(onClick = { load(path) }) {
-                    Text("Load")
-                }
-                OutlinedButton(onClick = { webViewRef.value?.reload() }) {
-                    Text("reload", fontSize = 11.sp)
-                }
-                OutlinedButton(
-                    onClick = { webViewRef.value?.goBack() },
-                    enabled = canBack,
-                ) {
-                    Text("◂ back", fontSize = 11.sp)
-                }
-                OutlinedButton(
-                    onClick = { webViewRef.value?.goForward() },
-                    enabled = canFwd,
-                ) {
-                    Text("fwd ▸", fontSize = 11.sp)
-                }
-                OutlinedButton(onClick = {
-                    val u = loadedPath
-                    if (u != null) {
-                        runCatching {
-                            context.startActivity(
-                                Intent.createChooser(
-                                    Intent(Intent.ACTION_VIEW, android.net.Uri.parse(u)),
-                                    "open in browser",
-                                ),
-                            )
-                        }
-                    }
-                }, enabled = loadedPath != null) {
-                    Text("browser", fontSize = 11.sp)
-                }
+                CompactTestAction("Load") { load(path) }
             }
-            // Viewport presets (M1.4h): constrain the page to a common size.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                CompactTestAction("reload") { webViewRef.value?.reload() }
+                CompactTestAction(
+                    label = "◂ back",
+                    onClick = { webViewRef.value?.goBack() },
+                    enabled = canBack,
+                )
+                CompactTestAction(
+                    label = "fwd ▸",
+                    onClick = { webViewRef.value?.goForward() },
+                    enabled = canFwd,
+                )
+                CompactTestAction(
+                    label = "browser",
+                    enabled = loadedPath != null,
+                    onClick = {
+                        val u = loadedPath
+                        if (u != null) {
+                            runCatching {
+                                context.startActivity(
+                                    Intent.createChooser(
+                                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(u)),
+                                        "open in browser",
+                                    ),
+                                )
+                            }
+                        }
+                    },
+                )
                 Text(
                     text = "viewport:",
                     fontSize = 10.sp,
@@ -342,7 +348,7 @@ fun TestTab(onGotoChat: () -> Unit) {
                 listOf("full", "phone 390×844", "tablet 768×1024", "desktop 1280×800").forEach { label ->
                     val id = label.substringBefore(' ')
                     Text(
-                        text = label.substringAfter(' ', label),
+                        text = label.substringAfter(' ', label).replace("full", "fit"),
                         fontSize = 10.sp,
                         color = if (viewport == id) TextPrimary else TextSecondary,
                         modifier = Modifier
@@ -477,10 +483,10 @@ fun TestTab(onGotoChat: () -> Unit) {
                     }
                 }
                 if (fullscreen) {
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(8.dp),
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         OutlinedButton(onClick = { setLandscape(!landscape) }) {
@@ -546,22 +552,18 @@ fun TestTab(onGotoChat: () -> Unit) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(
-                onClick = { capture() },
+            CompactTestAction(
+                label = if (capturing) "capturing…" else "Send screenshot to agent",
                 enabled = loadedPath != null && !capturing,
-            ) {
-                Text(if (capturing) "capturing…" else "Send screenshot to agent")
-            }
-            OutlinedButton(onClick = { savePng() }) {
-                Text("save png", fontSize = 11.sp)
-            }
-            OutlinedButton(onClick = { refreshFiles() }) {
-                Text("refresh files", fontSize = 11.sp)
-            }
+                onClick = { capture() },
+            )
+            CompactTestAction("save png") { savePng() }
+            CompactTestAction("refresh files") { refreshFiles() }
             loadedPath?.let {
                 Text(
                     text = "loaded: $it",
@@ -576,6 +578,25 @@ fun TestTab(onGotoChat: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun CompactTestAction(
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Text(
+        text = label,
+        fontSize = 10.sp,
+        color = if (enabled) TextPrimary else TextSecondary.copy(alpha = 0.45f),
+        modifier = Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(TileStone)
+            .border(1.dp, BevelLight, RoundedCornerShape(5.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    )
 }
 
 /** Minimal page for the agent to inspect via Test tab screenshots (M1.4h). */

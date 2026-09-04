@@ -186,7 +186,12 @@ static void report_exception(JNIEnv *env, JSContext *ctx) {
 /* ---- JNI exports (io.keepagent.runtime.js.JsHost) ---- */
 
 JNIEXPORT jlong JNICALL
-Java_io_keepagent_runtime_js_JsHost_nativeCreate(JNIEnv *env, jobject thiz) {
+Java_io_keepagent_runtime_js_JsHost_nativeCreate(JNIEnv *env, jobject thiz, jobject callbacks) {
+    /* NOTE: `thiz` is the JsHost instance — the Java-side callback surface
+     * is the separate `callbacks` argument (JsHost.Callbacks). Storing
+     * thiz here (the M0 bug) made every JS->host call silently fail: the
+     * bridge looks up onLog/onRegisterTool/... by name on the stored
+     * object's class, and JsHost has none of those methods. */
     if (host_count >= MAX_HOSTS) return 0;
 
     JSRuntime *rt = JS_NewRuntime();
@@ -210,7 +215,7 @@ Java_io_keepagent_runtime_js_JsHost_nativeCreate(JNIEnv *env, jobject thiz) {
     h->vm = NULL;
     h->callbacks = NULL;
     if ((*env)->GetJavaVM(env, &h->vm) != JNI_OK) h->vm = NULL;
-    h->callbacks = (*env)->NewGlobalRef(env, thiz);
+    h->callbacks = (*env)->NewGlobalRef(env, callbacks);
     return (jlong)(intptr_t)h;
 }
 

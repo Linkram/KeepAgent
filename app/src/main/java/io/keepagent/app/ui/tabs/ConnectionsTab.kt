@@ -6,6 +6,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -333,7 +336,12 @@ private fun ConnectionDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (existing == null) "New connection" else "Edit connection") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 TextField(
                     value = name,
                     onValueChange = { name = it },
@@ -409,7 +417,9 @@ private fun ConnectionDialog(
                                 fetchModelIds(baseUrl.trim(), apiKey.trim())
                             }
                             if (r.isSuccess) {
-                                fetchedModels = r.getOrThrow()
+                                val ids = r.getOrThrow()
+                                fetchedModels = ids
+                                if (model.isBlank()) model = ids.firstOrNull().orEmpty()
                             } else {
                                 fetchError = r.exceptionOrNull()?.message ?: "fetch failed"
                             }
@@ -419,7 +429,7 @@ private fun ConnectionDialog(
                     enabled = baseUrl.isNotBlank() && !fetchingModels,
                 ) {
                     Text(
-                        text = if (fetchingModels) "fetching…" else "Fetch models for this endpoint",
+                        text = if (fetchingModels) "fetching…" else "Auto-fill model choices",
                         fontSize = 11.sp,
                     )
                 }

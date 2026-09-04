@@ -19,11 +19,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -71,10 +68,13 @@ class ChatController(private val app: KeepAgentApp) {
     private val _sessionTitle = MutableStateFlow("New chat")
     val sessionTitle: StateFlow<String> = _sessionTitle.asStateFlow()
 
-    /** True while any turn is still streaming (drives the stop button + tab dot). */
-    val isRunning: StateFlow<Boolean> = _turns
-        .map { list -> list.any { it.run.isRunning } }
-        .stateIn(scope, SharingStarted.Eagerly, false)
+    /**
+     * Controller-owned run state. AgentRun.status is a nested flow, so deriving
+     * this from `_turns.map { run.isRunning }` misses status-only updates and
+     * leaves the Stop button stuck after errors or completion.
+     */
+    private val _isRunning = MutableStateFlow(false)
+    val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
     @Volatile
     private var _activeSessionId: String? = null
@@ -125,7 +125,7 @@ class ChatController(private val app: KeepAgentApp) {
     }
 
     val busy: Boolean
-        get() = _turns.value.lastOrNull()?.run?.isRunning == true
+        get() = _isRunning.value
 
     @Volatile
     private var turnJob: Job? = null
@@ -173,6 +173,7 @@ class ChatController(private val app: KeepAgentApp) {
             sentPrompt = prompt,
         )
         _turns.value = _turns.value + turn
+        _isRunning.value = true
         val history = buildHistory(excludeLast = true)
         val system = buildSystemText()
         turnJob = scope.launch(Dispatchers.Default) {
@@ -189,6 +190,8 @@ class ChatController(private val app: KeepAgentApp) {
                 // stop() — run is already CANCELED; fall through to save.
             } finally {
                 ticker.cancel()
+                _isRunning.value = false
+                turnJob = null
                 saveSession()
                 refreshStats()
                 app.stopAgentForeground()
@@ -198,7 +201,10 @@ class ChatController(private val app: KeepAgentApp) {
 
     /** Cancels the running turn (stop button / notification action). */
     fun stop() {
+        _turns.value.lastOrNull { it.run.isRunning }?.run?.cancel()
+        _isRunning.value = false
         turnJob?.cancel()
+        turnJob = null
     }
 
     // ---- Per-turn actions (M1.4) ----
@@ -219,6 +225,23 @@ class ChatController(private val app: KeepAgentApp) {
         _draftText.value = last.userText
         persistDraft()
         saveSession()
+    }
+
+    /**
+     * Rolls the conversation back to [index], replaces that user message
+     * with [newText], and re-runs the agent from there — everything after
+     * the edited message is discarded (2026-09-03: message edit action).
+     */
+    fun editTurn(index: Int, newText: String) {
+        if (busy) return
+        val text = newText.trim()
+        if (text.isEmpty()) return
+        val turns = _turns.value
+        if (index < 0 || index >= turns.size) return
+        val original = turns[index]
+        _turns.value = turns.subList(0, index)
+        // The re-sent message keeps the original turn's attachments.
+        dispatch(text, original.images, original.files)
     }
 
     /** Removes the turns at the given indices (history multi-delete, M1.4h). */
@@ -435,7 +458,7 @@ class ChatController(private val app: KeepAgentApp) {
             val err = st.error
             if (err != null) run.fail(err) else run.complete()
             run.addUsage(st.usagePrompt, st.usageCompletion)
-            if (st.elapsedMs > 0) run.finishedAtMillis = st.elapsedMs
+            if (st.elapsedMs > 0) run.finishedAtMillis = run.createdAtMillis + st.elapsedMs
             Turn(
                 userText = st.userText,
                 images = st.images,

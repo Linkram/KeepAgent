@@ -5,6 +5,7 @@ import io.keepagent.addonsapi.llm.LlmUsage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.UUID
 
 /** One compact tool invocation for the chat view (F-004 tool lines). */
 data class ToolLine(
@@ -27,7 +28,7 @@ class AgentRun {
 
     enum class Status { RUNNING, DONE, CANCELED, ERROR }
 
-    val id: String = "run-${System.currentTimeMillis()}"
+    val id: String = "run-${UUID.randomUUID()}"
     val createdAtMillis: Long = System.currentTimeMillis()
 
     private val _status = MutableStateFlow(Status.RUNNING)

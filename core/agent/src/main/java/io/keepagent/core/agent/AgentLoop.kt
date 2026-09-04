@@ -72,7 +72,18 @@ class AgentLoop(
                         is LlmEvent.ToolCallArgumentsDelta -> Unit
                     }
                 }
-                run.addMessage(ChatMessage.assistant(result.text, result.toolCalls))
+                // Repair malformed arguments (small local models, F-026)
+                // before anything consumes them: the tool-line summary, the
+                // approval card, the executor, and the assistant message
+                // that gets replayed into future history.
+                val calls = result.toolCalls.map { tc ->
+                    val (args, changed) = ToolArgsRepair.repair(tc.argumentsJson)
+                    if (changed) {
+                        eventBus.emit(EventKind.PROVIDER, modelId, "repaired malformed tool arguments for ${tc.name}")
+                    }
+                    if (args == tc.argumentsJson) tc else tc.copy(argumentsJson = args)
+                }
+                run.addMessage(ChatMessage.assistant(result.text, calls))
                 run.addUsage(result.usage.promptTokens, result.usage.completionTokens)
                 eventBus.emit(
                     EventKind.MESSAGE,
@@ -82,12 +93,12 @@ class AgentLoop(
                         "${result.toolCalls.size} tool call(s))",
                 )
 
-                if (result.toolCalls.isEmpty()) {
+                if (calls.isEmpty()) {
                     run.complete()
                     return
                 }
 
-                for ((i, tc) in result.toolCalls.withIndex()) {
+                for ((i, tc) in calls.withIndex()) {
                     currentCoroutineContext().ensureActive() // stop request?
                     val lineId = "${run.id}-r$round-$i"
                     val spec = tools.firstOrNull { it.name == tc.name }
