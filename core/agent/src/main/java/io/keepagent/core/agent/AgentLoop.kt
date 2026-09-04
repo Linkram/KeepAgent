@@ -135,6 +135,16 @@ class AgentLoop(
                     run.addMessage(ChatMessage.tool(tc.id, outcome.text))
                 }
             }
+            // The round limit used to end the turn silently — the reply just
+            // stopped mid-task with no explanation. Make it visible in the
+            // bubble (and in the next turn's history, so the model can pick
+            // up from the "continue" reply).
+            if (round >= maxRounds) {
+                run.appendText(
+                    "\n\n(stopped at the $maxRounds tool-call limit for this turn — " +
+                        "send \"continue\" to pick up where I left off)",
+                )
+            }
             eventBus.emit(EventKind.MESSAGE, modelId, "stopped: max tool rounds ($maxRounds) reached")
             run.complete()
         } catch (e: CancellationException) {
