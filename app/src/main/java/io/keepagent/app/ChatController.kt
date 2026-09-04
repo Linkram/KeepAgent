@@ -324,31 +324,38 @@ class ChatController(private val app: KeepAgentApp) {
 
     /**
      * Prior turns flattened into user/assistant pairs so the model keeps
-     * context across the conversation.
+     * context across the conversation. The most recent turns also carry a
+     * compact tool transcript (WS-1.4) so follow-ups can ground in the
+     * files earlier turns actually touched.
      */
     private fun buildHistory(excludeLast: Boolean): List<ChatMessage> {
         val src = _turns.value
         val last = if (excludeLast) src.size - 1 else src.size
+        val n = minOf(last, src.size)
         val out = mutableListOf<ChatMessage>()
-        for (i in 0 until minOf(last, src.size)) {
+        for (i in 0 until n) {
             val t = src[i]
             if (t.run.isRunning) continue
             if (t.userText.isBlank() && t.images.isEmpty()) continue
             out.add(ChatMessage.user(t.userText, t.images))
-            if (t.run.text.value.isNotBlank()) out.add(ChatMessage.assistant(t.run.text.value))
+            val transcript = if (n - i <= io.keepagent.core.agent.HistoryTranscript.RECENT_TURNS) {
+                io.keepagent.core.agent.HistoryTranscript.render(t.run.toolLines.value)
+            } else null
+            val text = t.run.text.value
+            when {
+                text.isNotBlank() && transcript != null ->
+                    out.add(ChatMessage.assistant(text + "\n" + transcript))
+                text.isNotBlank() -> out.add(ChatMessage.assistant(text))
+                transcript != null -> out.add(ChatMessage.assistant(transcript))
+            }
         }
         return out
     }
 
-    /** Minimal functional system prompt (workspace + tool guidance, no persona). */
+    /** System prompt for small local models first (WS-1.2); see SystemPrompts. */
     private fun buildSystemText(): String? {
         val ws = runCatching { app.workspaceManager.activeName() }.getOrNull() ?: return null
-        return buildString {
-            append("You are an agent working inside the Android app KeepAgent. ")
-            append("Your workspace is \"").append(ws).append("\". ")
-            append("Use the provided tools (read, write, edit, glob, grep) for file work. ")
-            append("Write concise, direct answers.")
-        }
+        return io.keepagent.core.agent.SystemPrompts.keepAgent(ws)
     }
 
     /** The user text as sent to the model, with attachments inlined at the end. */
