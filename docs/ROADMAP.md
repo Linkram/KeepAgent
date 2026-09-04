@@ -52,14 +52,20 @@ for every workstream:
 1. ✅ Lenient tool-argument repair in the agent loop (fences, trailing
    commas, unquoted keys, prose-wrapped JSON, raw control chars) — canonical
    JSON downstream, event logged when repair happened.
-2. Small-model system prompt: tool guidance, "one action at a time", plan
-   file pointer. Toggled per connection (small-model profile).
+2. ✅ Small-model system prompt (`SystemPrompts` in core:agent,
+   2026-09-04): imperative numbered rules, explicit tool discipline and
+   output format, <1.2 KB, shape pinned by tests. Per-connection
+   small-model profile toggle: pending. Plan-file pointer: lands with WS-4.
 3. Compact tool results: caps + truncation notes already exist; add
    summarize-then-pointer for large read/grep results under the profile.
-4. History policy: include recent tool rounds (last N) so the model sees
-   what it already read — currently only user/assistant text is replayed.
-5. Robustness debt: helper-process death rebind, sandbox settings snapshot
-   staleness, session autosave size (images → attachment store), cold-start
+4. ✅ History policy (WS-1.4, 2026-09-04): the last 3 prior turns append a
+   compact one-line tool transcript (`(tools) write(path=a.html) → ok; …`)
+   to their assistant messages, capped at 12 lines per turn.
+5. Robustness debt: ✅ helper-process death (transparent failover: rebind
+   the helper or fall back in-process, re-run the add-on bootstrap),
+   ✅ sandbox settings/workspace snapshot staleness (KeepJsService.updateEnv
+   refreshes a live engine in place; workspace switch re-roots everything),
+   remaining: session autosave size (images → attachment store), cold-start
    addon readiness gate, provider/tool-name collision rules.
 6. Eval: a scripted small-model task (read → edit → test → fix) with
    reproducible traces, run against Ollama/vLLM endpoints.
@@ -155,3 +161,23 @@ time WS-2 ships.
 - On-device verification (install the debug APK, drive the north-star
   scenario) at the end of each workstream, logged in this file.
 - `build-m*.log` at the repo root is the current build trail; keep it current.
+
+## Verification log
+
+- **2026-09-03 → 09-04 (commit `58ec3c7` "m1.4j"):** device-verified —
+  history sidebar (top-left icon, full-height slide-in under the status
+  bar, rename/delete/new), compact settings popup (small card, bottom-right
+  above the input bar, closes on outside tap, model/approval/files),
+  speed health color, edit/branch/copy/delete on own messages, approval
+  card auto-scroll. Tier-2 JS callbacks, StateFlow conflation, addon-enable
+  ANR, `:js` bootstrap, and ToolArgsRepair fixes verified earlier the same
+  night (noodleboats example project built end-to-end by the agent on-device).
+- **2026-09-04 (commits `e7aed5a` → `9184fb0`):** unit-verified, on-device
+  pending (phone unplugged overnight) — WS-1.2 system prompt (4 tests),
+  WS-1.4 tool transcripts (6 tests), helper-death failover, workspace-switch
+  environment refresh, visible 12-round stop, markdown upgrade
+  (17 parser tests: tables, nested lists, glyphs, strikethrough), in-app
+  docs (user guide + dev docs). First thing on reconnect: open a second
+  turn in an existing project and check the reply grounds in prior tool
+  lines; switch workspaces and write a file; open the docs from the
+  sidebar.

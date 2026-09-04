@@ -52,7 +52,8 @@ fun DocsScreen(onBack: () -> Unit) {
     var openIndex by remember { mutableIntStateOf(-1) }
     val docs = remember {
         listOf(
-            DocEntry("getting started", "build, run, and use KeepAgent", R.raw.ka_docs_readme),
+            DocEntry("user guide", "use KeepAgent: chat, workspaces, approvals", R.raw.ka_docs_user_guide),
+            DocEntry("developer guide", "build, run, and develop KeepAgent", R.raw.ka_docs_readme),
             DocEntry("addon api", "build add-ons against the versioned API", R.raw.ka_docs_addon_api),
             DocEntry("roadmap", "what ships in M1 / M2 / M3", R.raw.ka_docs_roadmap),
         )
