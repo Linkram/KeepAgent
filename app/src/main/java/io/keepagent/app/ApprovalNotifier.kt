@@ -24,13 +24,16 @@ class ApprovalNotifier(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         fun decision(action: String, code: Int) = PendingIntent.getBroadcast(
-            context, code, Intent(context, ApprovalReceiver::class.java).setAction(action),
+            context, code, Intent(context, ApprovalReceiver::class.java).setAction(action)
+                .setData(android.net.Uri.parse("keepagent-approval:${request.id}/$code"))
+                .putExtra("request_id", request.id),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = Notification.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_tab_chat)
             .setContentTitle("KeepAgent needs your approval")
-            .setContentText("${request.toolName} is waiting · tap to review")
+            .setContentText(request.summary.take(120))
+            .setStyle(Notification.BigTextStyle().bigText(request.summary.take(500)))
             .setContentIntent(open)
             .setVisibility(Notification.VISIBILITY_SECRET)
             .setOnlyAlertOnce(true)
@@ -53,11 +56,12 @@ class ApprovalNotifier(private val context: Context) {
 
 class ApprovalReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        when (intent.action) {
-            ApprovalNotifier.ALLOW -> Holder.app.approvalGate.decide(true)
-            ApprovalNotifier.DENY -> Holder.app.approvalGate.decide(false)
+        val requestId = intent.getStringExtra("request_id") ?: return
+        val decided = when (intent.action) {
+            ApprovalNotifier.ALLOW -> Holder.app.approvalGate.decide(true, requestId = requestId)
+            ApprovalNotifier.DENY -> Holder.app.approvalGate.decide(false, requestId = requestId)
             else -> return
         }
-        ApprovalNotifier(context).dismiss()
+        if (decided) ApprovalNotifier(context).dismiss()
     }
 }

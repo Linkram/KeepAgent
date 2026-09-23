@@ -111,6 +111,9 @@ class KeepAgentApp : Application() {
             allowlistProvider = {
                 parseAllowlist(settingsStore.getString(SettingsStore.NS_GENERAL, "toolAllowlist"))
             },
+            phoneUiFullAccessProvider = {
+                settingsStore.getString(SettingsStore.NS_GENERAL, "phoneUiAccess") == "full"
+            },
         )
         val approvalNotifier = ApprovalNotifier(this)
         mainScope.launch {
@@ -155,6 +158,7 @@ class KeepAgentApp : Application() {
                 ToolsCoreAddon(fileService),
                 localRuntime,
                 io.keepagent.app.runner.RunnerAddon(runnerConnection),
+                io.keepagent.app.phoneui.PhoneUiAddon(settingsStore, approvalGate),
             ),
         )
 

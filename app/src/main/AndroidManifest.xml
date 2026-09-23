@@ -10,6 +10,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Discover launchable apps without naming or privileging a particular one. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".KeepAgentApp"
         android:allowBackup="false"
@@ -61,6 +69,20 @@
             android:exported="false"
             android:process=":runtime"
             android:stopWithTask="false" />
+
+        <!-- Android binds this only after the user enables it in Accessibility settings. -->
+        <service
+            android:name=".phoneui.PhoneUiService"
+            android:label="@string/phone_ui_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phone_ui_service" />
+        </service>
 
         <!-- Stop action on the running-turn notification. -->
         <receiver

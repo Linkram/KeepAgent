@@ -80,6 +80,26 @@ for example, `keepagent-v8.apk`. Keep signing future releases with the same key
 so Android can install them over existing copies. Increase `versionCode` for
 every release.
 
+## Other phone apps
+
+In **Tools → Other phone apps**, choose **Ask each action** or explicitly allow
+**Full access**, then enable KeepAgent in Android's Accessibility settings.
+The default is **Off**. In ask mode, every `phone_ui` call, including reading
+the foreground screen, requires approval; Android notifications must be on to
+approve while another app is visible. The general agent approval setting does
+not override this choice. Full access skips the per-action prompts until you
+turn it off. Android's Accessibility permission can also be revoked at any
+time.
+
+The generic tool can find and launch installed apps, open a URL in a browser,
+inspect visible controls, click, enter text, scroll, tap, swipe, and navigate
+back or home. It uses the UI of whichever app is in the foreground, with no
+hard-coded package names. Controls are matched to a fresh screen snapshot and
+the expected app before acting. Password fields are hidden from snapshots.
+Apps that do not expose accessible controls may need coordinate gestures;
+content outside the visible UI is unavailable. Screen text returned to the
+agent may be sent to the configured model provider.
+
 ## First run
 
 1. Open the **Chat** tab. The header shows `no model configured`.

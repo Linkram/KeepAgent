@@ -1456,8 +1456,10 @@ private fun ApprovalCard(request: ApprovalRequest, onDecide: (Boolean, Boolean) 
             Button(onClick = { onDecide(true, false) }, modifier = Modifier.weight(1f)) {
                 Text("Allow", fontSize = 12.sp)
             }
-            OutlinedButton(onClick = { onDecide(true, true) }, modifier = Modifier.weight(1.4f)) {
-                Text("Always this session", fontSize = 10.sp)
+            if (request.permission != io.keepagent.addonsapi.ToolPermission.PHONE_UI) {
+                OutlinedButton(onClick = { onDecide(true, true) }, modifier = Modifier.weight(1.4f)) {
+                    Text("Always this session", fontSize = 10.sp)
+                }
             }
         }
     }

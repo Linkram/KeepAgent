@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import io.keepagent.app.Holder
+import io.keepagent.app.phoneui.PhoneUiAccessCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -84,6 +85,7 @@ fun ToolsTab(onNavigate: (Int) -> Unit, onDocs: () -> Unit) {
                 ) { Text("Verify local runtimes") }
             }
         }
+        PhoneUiAccessCard()
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Text("Desktop runner add-on", style=MaterialTheme.typography.titleLarge)

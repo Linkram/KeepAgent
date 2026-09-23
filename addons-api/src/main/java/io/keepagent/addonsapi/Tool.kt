@@ -9,7 +9,8 @@ enum class ToolPermission {
     WRITE,
     EXEC,
     NETWORK,
-    DEVICE;
+    DEVICE,
+    PHONE_UI;
 
     companion object {
         fun from(name: String?): ToolPermission =

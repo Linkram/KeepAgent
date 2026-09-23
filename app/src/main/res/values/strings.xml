@@ -1,0 +1,4 @@
+<resources>
+    <string name="phone_ui_service_label">KeepAgent phone app control</string>
+    <string name="phone_ui_service_description">With your approval, KeepAgent can read visible controls and interact with other apps. You can turn it off in KeepAgent or Android settings.</string>
+</resources>
