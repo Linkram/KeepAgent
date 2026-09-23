@@ -1,5 +1,17 @@
 # KeepAgent
 
+Current implementation and remaining release gates: [Product spec](docs/PRODUCT_SPEC.md).
+Staged public Git clone, ZIP project import, versioned handoff context, encrypted
+provider credentials, and bounded root project guidance are now available. The historical
+M1 description below predates chat persistence, Git operations, and context compaction;
+use the product spec for the current capability inventory. See [research](docs/RESEARCH.md)
+and [ADR-0004](docs/adr/0004-project-portability-and-execution-targets.md).
+
+The optional [desktop companion](companion/README.md) now provides persistent command
+jobs, headless Chromium, actual Electron application testing, exact-serial Android
+testing, artifacts, and owner-configured MCP add-ons. [ADR-0005](docs/adr/0005-companion-jobs-and-context.md)
+defines its boundaries and the durable-context/subagent design.
+
 A modular AI agentic development app for Android. A thin core runtime + a
 versioned Addon API; add-ons are the product, the host is small enough to
 audit. Ambition: desktop-agent parity (opencode / Claude Code class) on any
