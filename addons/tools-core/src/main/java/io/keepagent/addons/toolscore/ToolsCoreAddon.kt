@@ -42,12 +42,22 @@ class ToolsCoreAddon(private val fileService: FileService) : Tier1Addon {
         host.registerTool(
             reg(
                 "read",
-                "Read a text file from the workspace. Returns the file content; very large or binary files are rejected.",
+                "Read a text file from the workspace. Returns the file content; binary files and files over 512 KB are rejected. Very large results come back as head + tail with a pointer — follow the pointer (read again with offset) to page through the middle.",
                 ToolPermission.READ,
-                """{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root (absolute paths only in Full access mode)."}},"required":["path"]}""",
+                """{"type":"object","properties":{"path":{"type":"string","description":"File path relative to the workspace root (absolute paths only in Full access mode)."},"offset":{"type":"integer","description":"First line to return (1-based). Use to page into large files."},"limit":{"type":"integer","description":"Maximum number of lines to return. Use with offset to page."}},"required":["path"]}""",
             ),
         ) { argsJson ->
-            withArgs(argsJson) { a -> fileService.read(a.requireString("path")).toResult() }
+            withArgs(argsJson) { a ->
+                val path = a.requireString("path")
+                val r = fileService.read(
+                    path,
+                    offset = a.optInt("offset"),
+                    limit = a.optIntOrNull("limit"),
+                )
+                if (!r.ok) return@withArgs result(false, r.error ?: "failed")
+                // WS-1.3: compact oversized dumps for small-model contexts.
+                result(true, io.keepagent.core.fs.ResultCompactor.compactRead(r.text, path, a.optInt("offset")))
+            }
         }
 
         host.registerTool(
@@ -115,10 +125,13 @@ class ToolsCoreAddon(private val fileService: FileService) : Tier1Addon {
             ),
         ) { argsJson ->
             withArgs(argsJson) { a ->
+                // 100 matches ≈ a small-model-safe page; the footer reports
+                // the total so the model can narrow the pattern.
                 fileService.grep(
                     pattern = a.requireString("pattern"),
                     path = a.optStringOrNull("path"),
                     include = a.optStringOrNull("include"),
+                    limit = GREP_LIMIT,
                 ).toResult()
             }
         }
@@ -149,6 +162,12 @@ class ToolsCoreAddon(private val fileService: FileService) : Tier1Addon {
 
         fun optBoolean(key: String): Boolean =
             obj[key]?.jsonPrimitive?.booleanOrNull ?: false
+
+        fun optInt(key: String): Int =
+            obj[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
+
+        fun optIntOrNull(key: String): Int? =
+            obj[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
     }
 
     private fun withArgs(argsJson: String, block: (Args) -> String): String =
@@ -186,5 +205,7 @@ class ToolsCoreAddon(private val fileService: FileService) : Tier1Addon {
 
     companion object {
         const val DIFF_CAP = 64_000
+        /** Small-model-safe grep page (WS-1.3); the footer reports the total. */
+        const val GREP_LIMIT = 100
     }
 }

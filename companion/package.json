@@ -1,0 +1,10 @@
+{
+  "name": "keepagent-companion-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional real Electron application testing for KeepAgent",
+  "dependencies": {
+    "electron": "^40.0.0",
+    "playwright": "^1.62.0"
+  }
+}

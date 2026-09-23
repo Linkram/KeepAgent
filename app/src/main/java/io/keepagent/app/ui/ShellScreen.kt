@@ -41,6 +41,17 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.activity.compose.BackHandler
+import io.keepagent.app.ui.tabs.ToolsTab
 import kotlin.math.roundToInt
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,7 +85,9 @@ import io.keepagent.app.ui.theme.TileStone
 import io.keepagent.app.ui.theme.TileStoneSelected
 import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
+import io.keepagent.app.ui.theme.UserBubble
 import io.keepagent.app.ui.theme.WallBase
+import io.keepagent.app.ui.theme.WallBrick
 
 /**
  * The shell: stone top bar (model header + 6 beveled tiles), then the active
@@ -84,7 +97,9 @@ import io.keepagent.app.ui.theme.WallBase
 @Composable
 fun KeepAgentShell() {
     val app = Holder.app
-    var selected by remember { mutableIntStateOf(0) }
+    var selected by rememberSaveable { mutableIntStateOf(0) }
+    val savedPages = rememberSaveableStateHolder()
+    val wide = LocalConfiguration.current.screenWidthDp >= 600
     val isRunning by app.chatController.isRunning.collectAsState()
 
     // A share-in file just landed in the workspace: jump to Chat, where the
@@ -108,8 +123,17 @@ fun KeepAgentShell() {
     // In-app docs (2026-09-03): full-screen markdown reference, opened from
     // the history sidebar's "docs" button.
     var showDocs by remember { mutableStateOf(false) }
+    BackHandler(enabled=showDocs || showChatHistory || selected != 0) {
+        when {
+            showDocs -> showDocs = false
+            showChatHistory -> showChatHistory = false
+            selected in 3..5 -> selected = 6
+            else -> selected = 0
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(WallBase)) {
+        BrickWallBackdrop()
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -126,27 +150,9 @@ fun KeepAgentShell() {
         ) {
             CastleBattlements()
             HeaderBar(
-                historyVisible = selected == 0,
+                historyVisible = true,
                 onHistory = { showChatHistory = true },
             )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(72.dp)
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                TABS.forEachIndexed { index, (label, icon) ->
-                    TabTile(
-                        label = label,
-                        iconRes = icon,
-                        selected = index == selected,
-                        running = index == 0 && isRunning,
-                        onClick = { selected = index },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
             HorizontalDivider(color = BevelLight, thickness = 1.dp)
         }
 
@@ -161,7 +167,7 @@ fun KeepAgentShell() {
                 ) != "true",
             )
         }
-        if (onboardingVisible) {
+        if (onboardingVisible && selected == 0) {
             OnboardingCard(onGotoTab = { selected = it }, onDone = {
                 app.settingsStore.setString(
                     io.keepagent.core.settings.SettingsStore.NS_GENERAL,
@@ -173,15 +179,45 @@ fun KeepAgentShell() {
         }
 
         // Active tab over the wall backdrop.
-        Box(modifier = Modifier.fillMaxSize()) {
-            CastleWallBackground(modifier = Modifier.fillMaxSize())
+        Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            if (wide) NavigationRail(containerColor=BarStone) {
+                PRIMARY_DESTINATIONS.forEach { destination ->
+                    NavigationRailItem(selected=destination.first == selected || (destination.first == 6 && selected in 3..5),
+                        onClick={selected=destination.first},
+                        icon={Icon(painterResource(destination.third), contentDescription=null)},
+                        label={Text(destination.second)},
+                        colors=NavigationRailItemDefaults.colors(
+                            selectedIconColor=UserBubble, selectedTextColor=UserBubble,
+                            indicatorColor=TileStoneSelected, unselectedIconColor=TextSecondary,
+                            unselectedTextColor=TextSecondary,
+                        ))
+                }
+            }
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+            savedPages.SaveableStateProvider(selected) {
             when (selected) {
                 0 -> ChatTab(onOpenFileInWorkspaces = { selected = 2 })
                 1 -> TestTab(onGotoChat = { selected = 0 })
                 2 -> WorkspacesTab()
                 3 -> ConsoleTab(app.eventBus, app.eventLog)
                 4 -> AddonsTab(app.addonManager, app.eventBus)
-                else -> ConnectionsTab()
+                5 -> ConnectionsTab()
+                else -> ToolsTab(onNavigate={selected=it}, onDocs={showDocs=true})
+            }
+            }
+            }
+        }
+        if (!wide) NavigationBar(containerColor=BarStone, windowInsets=WindowInsets(0,0,0,0)) {
+            PRIMARY_DESTINATIONS.forEach { destination ->
+                NavigationBarItem(selected=destination.first == selected || (destination.first == 6 && selected in 3..5),
+                    onClick={selected=destination.first},
+                    icon={Icon(painterResource(destination.third), contentDescription=null, modifier=Modifier.size(24.dp))},
+                    label={Text(destination.second, maxLines=1)},
+                    colors=NavigationBarItemDefaults.colors(
+                        selectedIconColor=UserBubble, selectedTextColor=UserBubble,
+                        indicatorColor=TileStoneSelected, unselectedIconColor=TextSecondary,
+                        unselectedTextColor=TextSecondary,
+                    ))
             }
         }
         }
@@ -250,6 +286,28 @@ fun KeepAgentShell() {
             ) {
                 DocsScreen(onBack = { showDocs = false })
             }
+        }
+    }
+}
+
+/** Quiet masonry behind content: the keep identity without competing with controls. */
+@Composable
+private fun BrickWallBackdrop() {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val row = 42.dp.toPx()
+        val brick = 92.dp.toPx()
+        val mortar = WallBrick.copy(alpha = 0.18f)
+        var y = 0f
+        var rowIndex = 0
+        while (y <= size.height) {
+            drawLine(mortar, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(size.width, y), 1.dp.toPx())
+            var x = if (rowIndex % 2 == 0) 0f else -brick / 2f
+            while (x <= size.width) {
+                drawLine(mortar, androidx.compose.ui.geometry.Offset(x, y), androidx.compose.ui.geometry.Offset(x, y + row), 1.dp.toPx())
+                x += brick
+            }
+            y += row
+            rowIndex++
         }
     }
 }
@@ -360,6 +418,13 @@ private val TABS = listOf(
     "Connections" to R.drawable.ic_tab_connections,
 )
 
+private val PRIMARY_DESTINATIONS = listOf(
+    Triple(0, "Chat", R.drawable.ic_tab_chat),
+    Triple(2, "Files", R.drawable.ic_tab_workspaces),
+    Triple(1, "Test", R.drawable.ic_tab_test),
+    Triple(6, "Tools", R.drawable.ic_tune),
+)
+
 /** "1234" -> "1K", "999" -> "999" — compact token counts for the header chip. */
 private fun fmtK(n: Int): String = if (n >= 1000) "${(n + 500) / 1000}K" else "$n"
 
@@ -386,7 +451,7 @@ private fun HeaderBar(historyVisible: Boolean, onHistory: () -> Unit) {
         // Dedicated chat-history button (2026-09-03): top left of the status
         // strip, next to the speed readout — opens the full-height sidebar.
         if (historyVisible) {
-            IconButton(onClick = onHistory, modifier = Modifier.size(36.dp)) {
+            IconButton(onClick = onHistory, modifier = Modifier.size(48.dp)) {
                 Icon(
                     painter = painterResource(R.drawable.ic_history),
                     contentDescription = "chat history",
@@ -395,7 +460,11 @@ private fun HeaderBar(historyVisible: Boolean, onHistory: () -> Unit) {
                 )
             }
         }
-        Spacer(modifier = Modifier.weight(1f))
+        Column(Modifier.weight(1f).padding(horizontal=8.dp)) {
+            Text("KeepAgent", fontSize=16.sp, fontWeight=FontWeight.SemiBold, color=TextPrimary)
+            Text(app.workspaceManager.activeName(), fontSize=12.sp, color=TextSecondary, maxLines=1,
+                overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
         // Speed health (2026-09-03): red < 14 t/s, yellow 14–29, green 30+;
         // neutral while no turn has run yet.
         val speedColor = when {
@@ -405,8 +474,8 @@ private fun HeaderBar(historyVisible: Boolean, onHistory: () -> Unit) {
             else -> Color(0xFF8BC34A)
         }
         Text(
-            text = if (tps > 0) "Avg. Speed: ${tps.roundToInt()} t/s" else "Avg. Speed: — t/s",
-            fontSize = 9.sp,
+            text = if (tps > 0) "${tps.roundToInt()} t/s" else "Ready",
+            fontSize = 12.sp,
             color = speedColor,
             modifier = Modifier
                 .clip(RoundedCornerShape(4.dp))
@@ -422,9 +491,8 @@ private fun HeaderBar(historyVisible: Boolean, onHistory: () -> Unit) {
                 .padding(horizontal = 8.dp, vertical = 3.dp),
         ) {
             Text(
-                text = "Context: in:${fmtK(stats.lastPromptTokens)} " +
-                    "out:${fmtK(stats.completionTokens)} Max:${fmtK(stats.contextLimit)}",
-                fontSize = 9.sp,
+                text = "${fmtK(stats.lastPromptTokens)}/${fmtK(stats.contextLimit)}",
+                fontSize = 12.sp,
                 color = TextPrimary,
                 maxLines = 1,
             )

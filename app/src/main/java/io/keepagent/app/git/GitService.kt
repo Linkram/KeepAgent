@@ -6,17 +6,29 @@ import io.keepagent.app.ui.common.DEL
 import io.keepagent.app.ui.common.diffLines
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.Repository
+import io.keepagent.core.workspace.WorkspaceManager
 import java.io.File
+import java.net.URI
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Local-only git for the active workspace (M1.4): init, status, diff,
- * commit-all, and log. No remotes, no network — the identity is fixed to
- * KeepAgent / keepagent@local and lives only in per-commit metadata.
+ * Git for mobile workspaces: public HTTP(S) clone plus local init, status,
+ * diff, commit-all, and log. Push/pull credentials are intentionally not yet
+ * accepted. Local commits use the fixed KeepAgent / keepagent@local identity.
  */
 class GitService {
+
+    data class CloneInfo(val name: String, val files: Int)
+    data class DirtyFile(val path: String, val sha256: String?)
+    data class HandoffState(
+        val branch: String?,
+        val commit: String?,
+        val remote: String?,
+        val dirtyFiles: List<DirtyFile>,
+    )
 
     data class StatusInfo(
         val staged: Collection<String>,
@@ -35,6 +47,36 @@ class GitService {
     fun init(root: File) {
         if (isRepo(root)) return
         Git.init().setDirectory(root).setInitialBranch("main").call().use { it.close() }
+    }
+
+    /**
+     * Clones a public HTTP(S) repository into a new workspace. Embedded URL
+     * credentials and non-network schemes are rejected so secrets cannot leak
+     * into Git config or event history. A failed clone removes its partial
+     * destination, while an existing project is never overwritten.
+     */
+    fun clonePublic(
+        workspaces: WorkspaceManager,
+        requestedName: String,
+        repositoryUrl: String,
+    ): CloneInfo {
+        val safeUrl = validatePublicUrl(repositoryUrl)
+        try {
+            val imported = workspaces.importGenerated(requestedName) { destination ->
+                Git.cloneRepository()
+                    .setURI(safeUrl)
+                    .setDirectory(destination)
+                    .setTimeout(300)
+                    .call()
+                    .use { it.close() }
+            }
+            return CloneInfo(imported.name, imported.fileCount)
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                e.message?.takeIf { it.isNotBlank() } ?: "Git clone failed.",
+                e,
+            )
+        }
     }
 
     fun status(root: File): StatusInfo? = runCatching {
@@ -119,6 +161,27 @@ class GitService {
         }
     }.getOrDefault(emptyList())
 
+    fun handoffState(root: File): HandoffState? = runCatching {
+        Git.open(root).use { git ->
+            val repo = git.repository
+            val status = git.status().call()
+            val paths = (
+                status.added + status.changed + status.modified + status.missing +
+                    status.removed + status.untracked + status.untrackedFolders
+                ).distinct().sorted().take(500)
+            val dirty = paths.map { path ->
+                val file = File(root, path)
+                DirtyFile(path, file.takeIf { it.isFile }?.let(::sha256))
+            }
+            HandoffState(
+                branch = repo.branch,
+                commit = repo.resolve("HEAD")?.name,
+                remote = safeRemote(repo.config.getString("remote", "origin", "url")),
+                dirtyFiles = dirty,
+            )
+        }
+    }.getOrNull()
+
     private fun indexText(repo: Repository, path: String): String? {
         return try {
             val idx = repo.readDirCache()
@@ -127,6 +190,43 @@ class GitService {
             repo.newObjectReader().use { reader -> String(reader.open(id).getBytes()) }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(32 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun safeRemote(value: String?): String? {
+        if (value.isNullOrBlank()) return null
+        val uri = runCatching { URI(value) }.getOrNull() ?: return null
+        if (uri.userInfo != null) return null
+        return value
+    }
+
+    companion object {
+        internal fun validatePublicUrl(value: String): String {
+            val text = value.trim()
+            val uri = requireNotNull(runCatching { URI(text) }.getOrNull()) {
+                "Enter a valid repository URL."
+            }
+            require(uri.scheme.equals("https", true) || uri.scheme.equals("http", true)) {
+                "Only HTTP(S) repository URLs are supported."
+            }
+            require(!uri.host.isNullOrBlank()) { "The repository URL needs a host." }
+            require(uri.userInfo == null) {
+                "Credentials in repository URLs are not allowed. Clone public projects without embedded secrets."
+            }
+            return uri.toASCIIString()
         }
     }
 }

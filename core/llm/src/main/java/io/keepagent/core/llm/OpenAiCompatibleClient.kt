@@ -12,6 +12,7 @@ import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -25,6 +26,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.io.IOException
 import java.util.SortedMap
 import java.util.concurrent.TimeUnit
@@ -66,7 +68,7 @@ class OpenAiCompatibleClient(
         val url = rootUrl() + "/models"
         val req = Request.Builder().url(url).get().auth().build()
         val resp = client.newCall(req).execute()
-        resp.use { response ->
+        val models = resp.use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw IOException("HTTP ${response.code}" + snippet(body))
             val root = try {
@@ -82,10 +84,119 @@ class OpenAiCompatibleClient(
             } else {
                 data.mapNotNull { el ->
                     val obj = el as? JsonObject ?: return@mapNotNull null
-                    val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                    LlmModel(id = id, name = id, acceptsImages = id.contains("vision", ignoreCase = true))
+                    modelFromJson(obj)
                 }
             }
+        }
+        enrichFromLmStudio(models)
+    }
+
+    /**
+     * LM Studio intentionally keeps loaded-instance context configuration on
+     * its native model endpoint. If the OpenAI list omitted a limit, merge
+     * `/api/v1/models` metadata and prefer the loaded instance's configured
+     * context over the model file's theoretical maximum.
+     */
+    private fun enrichFromLmStudio(models: List<LlmModel>): List<LlmModel> {
+        val normalized = baseUrl.trimEnd('/')
+        // OpenRouter already publishes authoritative context metadata and its
+        // base path is /api/v1; avoid probing an inapplicable doubled path.
+        if (normalized.endsWith("/api/v1")) return models
+        val serverRoot = if (normalized.endsWith("/v1")) normalized.dropLast(3) else normalized
+        val metadata = runCatching {
+            val req = Request.Builder().url("$serverRoot/api/v1/models").get().auth().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) return@use emptyMap<String, Int>()
+                val root = json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject
+                lmStudioContextById(root)
+            }
+        }.getOrDefault(emptyMap())
+        if (metadata.isEmpty()) return models
+        return models.map { model ->
+            metadata[model.id]?.let { model.copy(contextWindow = it) } ?: model
+        }
+    }
+
+    /**
+     * Best-effort lookup for servers that publish richer metadata from the
+     * OpenAI `GET /models/{id}` endpoint than from the list endpoint.
+     */
+    suspend fun fetchModelDetails(modelId: String): LlmModel? = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = rootUrl().toHttpUrl().newBuilder()
+                .addPathSegment("models")
+                .addPathSegment(modelId)
+                .build()
+            client.newCall(Request.Builder().url(url).get().auth().build()).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = response.body?.string().orEmpty()
+                val root = json.parseToJsonElement(body).jsonObject
+                val model = root["data"] as? JsonObject ?: root
+                modelFromJson(model)
+            }
+        }.getOrNull()
+    }
+
+    companion object {
+        private val CONTEXT_KEYS = listOf(
+            "context_length",
+            "context_window",
+            "max_context_length",
+            "context_window_size",
+            "max_context_tokens",
+            "max_model_len",
+            "max_seq_len",
+            "max_position_embeddings",
+        )
+
+        /**
+         * OpenAI-compatible servers do not use one standard context-length
+         * field. OpenRouter, LM Studio, vLLM and local gateways expose one of
+         * the names above, either on the model or in a nested provider/config
+         * object, so accept all common forms without coupling to one vendor.
+         */
+        internal fun modelFromJson(obj: JsonObject): LlmModel? {
+            val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return null
+            return LlmModel(
+                id = id,
+                name = obj["name"]?.jsonPrimitive?.contentOrNull ?: id,
+                contextWindow = findContextWindow(obj),
+                acceptsImages = id.contains("vision", ignoreCase = true),
+            )
+        }
+
+        /** Native LM Studio metadata, with loaded configuration overriding file maximum. */
+        internal fun lmStudioContextById(root: JsonObject): Map<String, Int> {
+            val nativeModels = root["models"]?.jsonArray ?: return emptyMap()
+            return buildMap {
+                nativeModels.forEach modelLoop@{ element ->
+                    val obj = element as? JsonObject ?: return@modelLoop
+                    val key = obj["key"]?.jsonPrimitive?.contentOrNull
+                        ?: obj["id"]?.jsonPrimitive?.contentOrNull
+                    val maximum = findContextWindow(obj)
+                    if (key != null && maximum != null) put(key, maximum)
+                    obj["loaded_instances"]?.jsonArray?.forEach instanceLoop@{ instanceElement ->
+                        val instance = instanceElement as? JsonObject ?: return@instanceLoop
+                        val id = instance["id"]?.jsonPrimitive?.contentOrNull ?: return@instanceLoop
+                        val loaded = (instance["config"] as? JsonObject)?.let(::findContextWindow)
+                        if (loaded != null) put(id, loaded)
+                    }
+                }
+            }
+        }
+
+        private fun findContextWindow(obj: JsonObject): Int? {
+            for (key in CONTEXT_KEYS) {
+                val primitive = obj[key]?.let { runCatching { it.jsonPrimitive }.getOrNull() }
+                val value = primitive?.longOrNull
+                    ?: primitive?.contentOrNull?.replace("_", "")?.toLongOrNull()
+                if (value != null && value in 1_000..Int.MAX_VALUE.toLong()) return value.toInt()
+            }
+            for (value in obj.values) {
+                val nested = value as? JsonObject ?: continue
+                findContextWindow(nested)?.let { return it }
+            }
+            return null
         }
     }
 

@@ -64,7 +64,16 @@ class ProviderOpenAiAddon(
         private var client: OpenAiCompatibleClient? = null
         private var clientKey: String? = null
 
-        override suspend fun listModels(): List<LlmModel> = client().listModels()
+        override suspend fun listModels(): List<LlmModel> {
+            val models = client().listModels()
+            val selected = settings.getString(NS_MODEL, "model")?.takeIf { it.isNotBlank() }
+                ?: return models
+            val index = models.indexOfFirst { it.id == selected }
+            if (index < 0 || models[index].contextWindow != null) return models
+            val detail = client().fetchModelDetails(selected)?.takeIf { it.contextWindow != null }
+                ?: return models
+            return models.toMutableList().also { it[index] = models[index].copy(contextWindow = detail.contextWindow) }
+        }
 
         override suspend fun streamChat(
             request: LlmRequest,

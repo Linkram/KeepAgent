@@ -1,6 +1,9 @@
 package io.keepagent.app.ui.tabs
 
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.keepagent.app.Holder
 import io.keepagent.app.git.GitService
+import io.keepagent.app.handoff.HandoffExporter
 import io.keepagent.app.ui.common.FileOpener
 import io.keepagent.app.ui.common.Recents
 import io.keepagent.core.fs.FileService
@@ -80,6 +84,7 @@ fun WorkspacesTab() {
     var list by remember { mutableStateOf<List<WorkspaceInfo>>(emptyList()) }
     var message by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
+    var cloneUrl by remember { mutableStateOf("") }
     // A workspace tab is primarily a file workspace, not a project chooser.
     // Open the active project immediately; the compact chooser is one tap away.
     var openWs by remember { mutableStateOf<String?>(app.workspaceManager.activeName()) }
@@ -88,6 +93,33 @@ fun WorkspacesTab() {
     var renameName by remember { mutableStateOf("") }
 
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var importing by remember { mutableStateOf(false) }
+    var cloning by remember { mutableStateOf(false) }
+    val importZip = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            importing = true
+            val projectName = name
+            scope.launch {
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        val stream = context.contentResolver.openInputStream(uri)
+                            ?: error("Cannot open the selected archive.")
+                        stream.use { app.workspaceManager.importZip(it, projectName) }
+                    }
+                    list = withContext(Dispatchers.IO) { app.workspaceManager.list() }
+                    message = "Imported ${result.name}: ${result.files} files. Tap the project to continue."
+                    name = ""
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    message = "Import failed: ${e.message}"
+                } finally {
+                    importing = false
+                }
+            }
+        }
+    }
     val active = app.workspaceManager.activeName()
     val fileAccess = FileAccess.from(
         app.settingsStore.getString(
@@ -114,6 +146,7 @@ fun WorkspacesTab() {
     // Tapping a workspace makes it active (file tools re-point to its root)
     // and opens the file browser for it.
     val open = openWs
+    BackHandler(enabled = open != null) { openWs = null }
     if (open != null) {
         WorkspaceExplorer(
             wsName = open,
@@ -170,7 +203,7 @@ fun WorkspacesTab() {
                 ),
             )
             Button(
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && !importing && !cloning,
                 onClick = {
                 val created = app.workspaceManager.create(name)
                 message = if (created != null) {
@@ -186,6 +219,58 @@ fun WorkspacesTab() {
                 },
             ) { Text("+ Create") }
         }
+        TextField(
+            value = cloneUrl,
+            onValueChange = { cloneUrl = it },
+            placeholder = { Text("https://github.com/owner/project.git", fontSize = 13.sp) },
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp).fillMaxWidth(),
+            singleLine = true,
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = TileStone,
+                unfocusedContainerColor = TileStone,
+                focusedIndicatorColor = BevelLight,
+                unfocusedIndicatorColor = BevelLight,
+            ),
+        )
+        Button(
+            onClick = {
+                val projectName = name
+                val url = cloneUrl
+                cloning = true
+                scope.launch {
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            GitService().clonePublic(app.workspaceManager, projectName, url)
+                        }
+                        list = withContext(Dispatchers.IO) { app.workspaceManager.list() }
+                        app.workspaceManager.setActive(result.name)
+                        app.workspaceChanged()
+                        openWs = result.name
+                        message = "Cloned ${result.name}: ${result.files} files."
+                        name = ""
+                        cloneUrl = ""
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        message = "Clone failed: ${e.message}"
+                    } finally {
+                        cloning = false
+                    }
+                }
+            },
+            enabled = name.isNotBlank() && cloneUrl.isNotBlank() && !importing && !cloning,
+            modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().heightIn(min = 48.dp),
+        ) { Text(if (cloning) "Cloning repository…" else "Clone public Git repository") }
+        OutlinedButton(
+            onClick = { importZip.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
+            enabled = name.isNotBlank() && !importing && !cloning,
+            modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().heightIn(min = 48.dp),
+        ) { Text(if (importing) "Importing project…" else "Import ZIP as new project") }
+        Text(
+            "Use a public HTTP(S) Git URL or choose a ZIP. Included Git history is preserved; desktop chat history is not imported.",
+            fontSize = 12.sp, color = TextSecondary,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+        )
         message?.let { msg ->
             Text(
                 text = msg,
@@ -471,10 +556,23 @@ private fun WorkspaceExplorer(
                 val zip = File(context.cacheDir, "keepagent-$wsName-${System.currentTimeMillis()}.zip")
                 ZipOutputStream(zip.outputStream()).use { zos ->
                     root.walkTopDown().filter { it.isFile && !it.path.contains("/.git/") }.forEach { f ->
-                        zos.putNextEntry(ZipEntry(f.relativeTo(root).path.replace(File.separatorChar, '/')))
+                        val relative = f.relativeTo(root).path.replace(File.separatorChar, '/')
+                        if (relative == ".keepagent/handoff.json") return@forEach
+                        zos.putNextEntry(ZipEntry(relative))
                         f.inputStream().use { it.copyTo(zos) }
                         zos.closeEntry()
                     }
+                    val handoff = HandoffExporter.create(
+                        workspaceName = wsName,
+                        root = root,
+                        appVersion = context.packageManager
+                            .getPackageInfo(context.packageName, 0).versionName ?: "unknown",
+                        git = git.handoffState(root),
+                        chat = app.chatController.handoffSnapshot(),
+                    )
+                    zos.putNextEntry(ZipEntry(".keepagent/handoff.json"))
+                    zos.write(handoff.toByteArray(Charsets.UTF_8))
+                    zos.closeEntry()
                 }
                 zip
             }

@@ -27,6 +27,7 @@ class AgentLoop(
     private val executor: ToolExecutor,
     private val approval: ApprovalGate,
     private val eventBus: EventBus,
+    private val contextLimit: Int = 0,
     private val maxRounds: Int = MAX_ROUNDS,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
@@ -42,6 +43,7 @@ class AgentLoop(
         images: List<ImagePart> = emptyList(),
         history: List<ChatMessage> = emptyList(),
         systemText: String? = null,
+        contextUsageHint: Int = 0,
     ) {
         try {
             systemText?.takeIf { it.isNotBlank() }?.let { run.addMessage(ChatMessage.system(it)) }
@@ -54,14 +56,50 @@ class AgentLoop(
             )
 
             var round = 0
+            var lastPromptUsage = contextUsageHint
+            var compactionFailed = false
+            val definitions = tools.map { it.toDefinition() }
+            val toolDefinitionTokens = definitions.sumOf {
+                (it.name.length + it.description.length + it.parametersJson.length + 3) / 4
+            }
+            val compactor = ContextCompactor(provider, modelId, contextLimit)
             while (round < maxRounds) {
                 round++
                 // A stop request between rounds ends the turn cleanly.
                 currentCoroutineContext().ensureActive()
+                val compacted = if (compactionFailed) null else try {
+                    compactor.compactIfNeeded(
+                        messages = run.messages.value,
+                        toolDefinitionTokens = toolDefinitionTokens,
+                        providerUsageHint = lastPromptUsage,
+                    )
+                } catch (e: Exception) {
+                    compactionFailed = true
+                    run.addNotice("Context compaction failed; continuing with bounded results")
+                    eventBus.emit(EventKind.ERROR, modelId, "context compaction failed: ${e.message}")
+                    null
+                }
+                compacted?.let { compacted ->
+                    run.replaceMessages(compacted.messages)
+                    run.addNotice("Context compacted · summarized ${compacted.summarizedMessages} messages")
+                    lastPromptUsage = 0
+                    eventBus.emit(
+                        EventKind.MESSAGE,
+                        modelId,
+                        "context compacted automatically at ${ContextCompactor.COMPACT_AT_PERCENT}%",
+                    )
+                }
+                run.setCurrentPromptTokens(
+                    ContextCompactor.estimateTokens(run.messages.value) + toolDefinitionTokens,
+                )
                 val request = LlmRequest(
                     model = modelId,
                     messages = run.messages.value,
-                    tools = tools.map { it.toDefinition() },
+                    tools = definitions,
+                    maxTokens = if (contextLimit > 0) {
+                        (contextLimit - run.currentPromptTokens - COMPLETION_RESERVE)
+                            .coerceIn(MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS)
+                    } else null,
                 )
                 val result = provider.streamChat(request) { ev ->
                     when (ev) {
@@ -72,6 +110,7 @@ class AgentLoop(
                         is LlmEvent.ToolCallArgumentsDelta -> Unit
                     }
                 }
+                run.flushStreams()
                 // Repair malformed arguments (small local models, F-026)
                 // before anything consumes them: the tool-line summary, the
                 // approval card, the executor, and the assistant message
@@ -85,6 +124,8 @@ class AgentLoop(
                 }
                 run.addMessage(ChatMessage.assistant(result.text, calls))
                 run.addUsage(result.usage.promptTokens, result.usage.completionTokens)
+                lastPromptUsage = result.usage.promptTokens
+                if (lastPromptUsage > 0) run.setCurrentPromptTokens(lastPromptUsage)
                 eventBus.emit(
                     EventKind.MESSAGE,
                     modelId,
@@ -168,6 +209,9 @@ class AgentLoop(
 
     companion object {
         const val MAX_ROUNDS = 12
+        private const val COMPLETION_RESERVE = 256
+        private const val MIN_COMPLETION_TOKENS = 256
+        private const val MAX_COMPLETION_TOKENS = 4_096
         private val FILE_EXTRA_KEYS = setOf("path")
     }
 

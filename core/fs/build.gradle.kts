@@ -21,4 +21,5 @@ android {
 dependencies {
     api(project(":core:settings"))
     api(project(":core:events"))
+    testImplementation(kotlin("test"))
 }

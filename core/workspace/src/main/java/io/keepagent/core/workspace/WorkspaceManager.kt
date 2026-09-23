@@ -5,6 +5,7 @@ import io.keepagent.core.events.EventKind
 import io.keepagent.core.settings.SettingsStore
 import io.keepagent.core.storage.Storage
 import java.io.File
+import java.util.UUID
 
 /** One workspace: a named directory the agent works in (spec §4.1 `core-workspace`). */
 data class WorkspaceInfo(
@@ -57,7 +58,7 @@ class WorkspaceManager(
 
     /** Creates a new workspace; returns its name, or null if the name is unusable or taken. */
     fun create(name: String): String? {
-        val sanitized = name.replace(Regex("[^a-zA-Z0-9-]"), "-").trim('-')
+        val sanitized = sanitize(name)
         if (sanitized.isEmpty() || sanitized.length > 40) return null
         if (File(root, sanitized).exists()) return null
         File(root, sanitized).mkdirs()
@@ -67,7 +68,7 @@ class WorkspaceManager(
 
     /** Renames a workspace (and its persisted active pointer). Returns the new name, or null. */
     fun rename(oldName: String, newName: String): String? {
-        val sanitized = newName.replace(Regex("[^a-zA-Z0-9-]"), "-").trim('-')
+        val sanitized = sanitize(newName)
         if (sanitized.isEmpty() || sanitized.length > 40) return null
         if (sanitized == oldName) return oldName
         val oldDir = File(root, oldName)
@@ -104,8 +105,59 @@ class WorkspaceManager(
 
     fun activeRoot(): File = File(root, activeName())
 
+    /** Resolves an existing project directory without allowing path traversal. */
+    fun rootFor(name: String): File? {
+        val candidate = File(root, name)
+        return candidate.takeIf {
+            it.isDirectory && it.parentFile?.canonicalFile == root.canonicalFile
+        }
+    }
+
+    /**
+     * Builds a project outside the visible workspace list, then atomically
+     * publishes it. This keeps interrupted clones/generators from appearing as
+     * valid projects and never overwrites an existing destination.
+     */
+    fun importGenerated(name: String, populate: (File) -> Unit): WorkspaceInfo {
+        val sanitized = sanitize(name)
+        require(sanitized.isNotEmpty() && sanitized.length <= 40) { "Choose a valid project name." }
+        val destination = File(root, sanitized)
+        require(!destination.exists()) { "That project name is unavailable." }
+        val stagingRoot = File(root.parentFile, ".project-imports")
+        check(stagingRoot.isDirectory || stagingRoot.mkdirs()) { "Cannot create import staging area." }
+        val staging = File(stagingRoot, "generated-${UUID.randomUUID()}")
+        val project = File(staging, sanitized)
+        check(project.mkdirs()) { "Cannot create import staging directory." }
+        try {
+            populate(project)
+            require(project.listFiles()?.isNotEmpty() == true) { "The imported project is empty." }
+            check(project.renameTo(destination)) { "Cannot finish project import." }
+            val files = destination.walkTopDown().filter { it.isFile }.toList()
+            return WorkspaceInfo(
+                name = sanitized,
+                root = destination.absolutePath,
+                lastModifiedMillis = files.maxOfOrNull { it.lastModified() } ?: destination.lastModified(),
+                fileCount = files.size,
+                sizeBytes = files.sumOf { it.length() },
+            ).also {
+                eventBus.emit(EventKind.SYSTEM, "workspaces", "imported generated project '$sanitized': ${it.fileCount} files")
+            }
+        } finally {
+            staging.deleteRecursively()
+        }
+    }
+
+    fun importZip(input: java.io.InputStream, name: String): ProjectImporter.Result {
+        val result = ProjectImporter(root).importZip(input, name)
+        eventBus.emit(EventKind.SYSTEM, "workspaces", "imported '${result.name}': ${result.files} files, ${result.bytes} bytes")
+        return result
+    }
+
     companion object {
         const val DEFAULT_NAME = "default"
         const val ACTIVE_KEY = "activeWorkspace"
+
+        private fun sanitize(name: String): String =
+            name.replace(Regex("[^a-zA-Z0-9-]"), "-").trim('-')
     }
 }

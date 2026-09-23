@@ -1,5 +1,17 @@
 # KeepAgent
 
+Current implementation and remaining release gates: [Product spec](docs/PRODUCT_SPEC.md).
+Staged public Git clone, ZIP project import, versioned handoff context, encrypted
+provider credentials, and bounded root project guidance are now available. The historical
+M1 description below predates chat persistence, Git operations, and context compaction;
+use the product spec for the current capability inventory. See [research](docs/RESEARCH.md)
+and [ADR-0004](docs/adr/0004-project-portability-and-execution-targets.md).
+
+The optional [desktop companion](companion/README.md) now provides persistent command
+jobs, headless Chromium, actual Electron application testing, exact-serial Android
+testing, artifacts, and owner-configured MCP add-ons. [ADR-0005](docs/adr/0005-companion-jobs-and-context.md)
+defines its boundaries and the durable-context/subagent design.
+
 A modular AI agentic development app for Android. A thin core runtime + a
 versioned Addon API; add-ons are the product, the host is small enough to
 audit. Ambition: desktop-agent parity (opencode / Claude Code class) on any
@@ -51,6 +63,22 @@ Install and run:
 adb install app\build\outputs\apk\debug\app-debug.apk
 adb shell am start -n io.keepagent/io.keepagent.app.MainActivity
 ```
+
+## App updates
+
+On launch, KeepAgent checks the latest published release at
+`github.com/Linkram/KeepAgent` at most once every 24 hours. When its APK has a
+higher Android `versionCode`, the app downloads it, checks the release size and
+APK package/version/signing certificate (plus GitHub's SHA-256 digest when
+available), and asks you to install it through Android. Android requires your
+confirmation and may first ask you to allow installs from KeepAgent. The
+Connections tab's **general** section also has **Check for app updates** for
+an immediate retry. Offline launches continue normally.
+
+Publish one APK asset named `keepagent-v<versionCode>.apk` in each GitHub release;
+for example, `keepagent-v8.apk`. Keep signing future releases with the same key
+so Android can install them over existing copies. Increase `versionCode` for
+every release.
 
 ## First run
 

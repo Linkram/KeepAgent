@@ -6,10 +6,13 @@ import io.keepagent.addonsapi.llm.LlmModel
 import io.keepagent.app.chat.ChatSession
 import io.keepagent.app.chat.ChatStore
 import io.keepagent.app.chat.StoredFile
+import io.keepagent.app.chat.StoredActivity
 import io.keepagent.app.chat.StoredTool
 import io.keepagent.app.chat.StoredTurn
+import io.keepagent.app.chat.TurnRecovery
 import io.keepagent.core.agent.AgentRun
 import io.keepagent.core.agent.ToolLine
+import io.keepagent.core.agent.RunActivity
 import io.keepagent.core.events.EventKind
 import io.keepagent.core.settings.SettingsStore
 import kotlinx.coroutines.CancellationException
@@ -23,6 +26,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 /**
@@ -57,6 +62,7 @@ class ChatController(private val app: KeepAgentApp) {
 
     private val _stats = MutableStateFlow(SessionStats())
     val stats: StateFlow<SessionStats> = _stats.asStateFlow()
+    @Volatile private var memorySummary: String? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val store = ChatStore(File(app.filesDir, "keepagent/chats"))
@@ -117,9 +123,11 @@ class ChatController(private val app: KeepAgentApp) {
     }
 
     init {
+        refreshStats()
         // Continue the most recent session across app restarts.
         scope.launch(Dispatchers.IO) {
-            val latest = store.latest()
+            val workspace = app.workspaceManager.activeName()
+            val latest = store.list().firstOrNull { it.workspace == null || it.workspace == workspace }
             if (latest != null && latest.turns.isNotEmpty()) loadIntoTurns(latest)
         }
     }
@@ -152,7 +160,6 @@ class ChatController(private val app: KeepAgentApp) {
                 "true",
             )
         }
-        app.ensureAgentForeground()
         dispatch(trimmed, images, files)
     }
 
@@ -174,33 +181,57 @@ class ChatController(private val app: KeepAgentApp) {
         )
         _turns.value = _turns.value + turn
         _isRunning.value = true
+        app.beginBackgroundWork("agent-turn") { stop() }
+        saveSession()
         val history = buildHistory(excludeLast = true)
-        val system = buildSystemText()
+        val workspaceName = app.workspaceManager.activeName()
+        val workspaceRoot = app.workspaceManager.activeRoot()
         turnJob = scope.launch(Dispatchers.Default) {
             // Periodic save so a killed app keeps a partial turn.
             val ticker = launch {
+                while (isActive && turn.run.isRunning) {
+                    delay(250)
+                    refreshStats()
+                }
+            }
+            val saveTicker = launch {
                 while (isActive && turn.run.isRunning) {
                     delay(5_000)
                     saveSession()
                 }
             }
             try {
-                agent.runTurn(turn.run, prompt, images, history = history, systemText = system)
+                agent.runTurn(
+                    turn.run,
+                    prompt,
+                    images,
+                    history = history,
+                    systemText = io.keepagent.core.agent.SystemPrompts.keepAgent(workspaceName) +
+                        kotlinx.coroutines.withContext(Dispatchers.IO) {
+                            io.keepagent.core.agent.ProjectContext.load(workspaceRoot)
+                        },
+                    contextUsageHint = _stats.value.lastPromptTokens,
+                )
             } catch (e: CancellationException) {
                 // stop() — run is already CANCELED; fall through to save.
             } finally {
                 ticker.cancel()
+                saveTicker.cancel()
+                memorySummary = turn.run.messages.value.lastOrNull {
+                    it.role == io.keepagent.addonsapi.llm.ChatRole.SYSTEM && it.content.startsWith(MEMORY_PREFIX)
+                }?.content?.removePrefix(MEMORY_PREFIX)?.trim() ?: memorySummary
                 _isRunning.value = false
                 turnJob = null
                 saveSession()
                 refreshStats()
-                app.stopAgentForeground()
+                app.finishBackgroundWork("agent-turn")
             }
         }
     }
 
     /** Cancels the running turn (stop button / notification action). */
     fun stop() {
+        app.localRuntime.cancelActive()
         _turns.value.lastOrNull { it.run.isRunning }?.run?.cancel()
         _isRunning.value = false
         turnJob?.cancel()
@@ -274,6 +305,8 @@ class ChatController(private val app: KeepAgentApp) {
                 createdAt = now,
                 updatedAt = now,
                 turns = turns.subList(0, index + 1).map { snapshot(it) },
+                workspace = app.workspaceManager.activeName(),
+                memorySummary = memorySummary,
             )
             store.save(session)
             loadIntoTurns(session)
@@ -312,15 +345,24 @@ class ChatController(private val app: KeepAgentApp) {
         var lastPrompt = 0
         for (t in turns) {
             val u = t.run.usage
-            completion += u.completionTokens
+            completion += if (t.run.isRunning) t.run.estimatedCompletionTokens() else u.completionTokens
             elapsed += t.run.elapsedMs
-            lastPrompt = maxOf(lastPrompt, u.promptTokens)
+            lastPrompt = if (t.run.isRunning) {
+                maxOf(lastPrompt, t.run.currentPromptTokens + t.run.estimatedCompletionTokens())
+            } else {
+                maxOf(lastPrompt, u.promptTokens)
+            }
         }
         // For settled turns, use the stored elapsed when available (loaded sessions).
-        val limit = app.settingsStore
-            .getString(SettingsStore.NS_MODEL, "contextLimit")?.toIntOrNull()?.coerceIn(1000, 2_000_000) ?: 128_000
+        val limit = app.connections.active()?.effectiveContextLimit
+            ?: app.settingsStore.getString(SettingsStore.NS_MODEL, "contextLimit")
+                ?.toIntOrNull()?.coerceIn(1_000, 2_000_000)
+            ?: ApiConnection.DEFAULT_CONTEXT_LIMIT
         _stats.value = SessionStats(completion, elapsed, lastPrompt, limit)
     }
+
+    /** Re-reads the active connection's effective limit for the persistent header. */
+    fun refreshContextLimit() = refreshStats()
 
     /**
      * Prior turns flattened into user/assistant pairs so the model keeps
@@ -333,7 +375,9 @@ class ChatController(private val app: KeepAgentApp) {
         val last = if (excludeLast) src.size - 1 else src.size
         val n = minOf(last, src.size)
         val out = mutableListOf<ChatMessage>()
-        for (i in 0 until n) {
+        memorySummary?.takeIf(String::isNotBlank)?.let { out.add(ChatMessage.system(MEMORY_PREFIX + it)) }
+        val from = if (memorySummary == null) 0 else maxOf(0, n - DURABLE_RECENT_TURNS)
+        for (i in from until n) {
             val t = src[i]
             if (t.run.isRunning) continue
             if (t.userText.isBlank() && t.images.isEmpty()) continue
@@ -352,12 +396,6 @@ class ChatController(private val app: KeepAgentApp) {
         return out
     }
 
-    /** System prompt for small local models first (WS-1.2); see SystemPrompts. */
-    private fun buildSystemText(): String? {
-        val ws = runCatching { app.workspaceManager.activeName() }.getOrNull() ?: return null
-        return io.keepagent.core.agent.SystemPrompts.keepAgent(ws)
-    }
-
     /** The user text as sent to the model, with attachments inlined at the end. */
     private fun buildPromptText(text: String, files: List<AttachedFile>): String {
         if (files.isEmpty()) return text
@@ -372,6 +410,13 @@ class ChatController(private val app: KeepAgentApp) {
     fun decideApproval(allow: Boolean, remember: Boolean = false) =
         app.approvalGate.decide(allow, remember)
 
+    /** Selects a discovered model and applies its context window immediately. */
+    fun selectModel(id: String) {
+        val contextWindow = _models.value.firstOrNull { it.id == id }?.contextWindow
+        app.connections.setActiveModel(id, contextWindow)
+        refreshStats()
+    }
+
     /** Loads the provider's model list; failures surface in [modelsError]. */
     fun refreshModels(force: Boolean = false) {
         if (modelsLoaded && !force) return
@@ -380,9 +425,25 @@ class ChatController(private val app: KeepAgentApp) {
         scope.launch {
             runCatching { provider.listModels() }
                 .onSuccess {
-                    _models.value = it
+                    app.connections.updateActiveModelMetadata(it)
+                    val connection = app.connections.active()
+                    val discoveredById = it.associateBy { model -> model.id }
+                    _models.value = connection?.models?.map { config ->
+                        discoveredById[config.id]
+                            ?: LlmModel(
+                                id = config.id,
+                                name = config.id,
+                                contextWindow = config.providerContextLength,
+                            )
+                    } ?: it
                     _modelsError.value = null
                     modelsLoaded = true
+                    val selected = app.currentModelId()
+                    val contextWindow = discoveredById[selected]?.contextWindow
+                    if (selected != null && contextWindow != null) {
+                        app.connections.updateActiveContext(selected, contextWindow)
+                    }
+                    refreshStats()
                 }
                 .onFailure {
                     _modelsError.value = it.message ?: "model list unavailable"
@@ -393,7 +454,10 @@ class ChatController(private val app: KeepAgentApp) {
     // ---- Chat history (M1.3) ----
 
     /** All persisted sessions, most recently updated first. Call off the main thread. */
-    fun listSessions(): List<ChatSession> = store.list()
+    fun listSessions(): List<ChatSession> {
+        val workspace = app.workspaceManager.activeName()
+        return store.list().filter { it.workspace == null || it.workspace == workspace }
+    }
 
     /** Loads a session's turns into the chat so the conversation continues. */
     fun openSession(id: String) {
@@ -417,6 +481,7 @@ class ChatController(private val app: KeepAgentApp) {
         _activeSessionId = null
         _sessionTitle.value = "New chat"
         _turns.value = emptyList()
+        memorySummary = null
         app.approvalGate.clearMemory() // "always allow (this session)" resets per conversation
     }
 
@@ -442,13 +507,18 @@ class ChatController(private val app: KeepAgentApp) {
     }
 
     private fun loadIntoTurns(session: ChatSession) {
+        val workspace = app.workspaceManager.activeName()
+        if (session.workspace != null && session.workspace != workspace) {
+            app.eventBus.emit(EventKind.ERROR, "chat", "chat belongs to '${session.workspace}', current workspace is '$workspace'")
+            return
+        }
         _activeSessionId = session.id
+        memorySummary = session.memorySummary
         _sessionTitle.value = session.title
         _turns.value = session.turns.map { st ->
             val run = AgentRun()
             if (st.agentText.isNotEmpty()) run.appendText(st.agentText)
-            if (st.thinking.isNotEmpty()) run.appendThinking(st.thinking)
-            st.tools.forEachIndexed { i, t ->
+            fun restoreTool(i: Int, t: StoredTool) {
                 val status = runCatching { ToolLine.Status.valueOf(t.status) }
                     .getOrDefault(ToolLine.Status.OK)
                 run.addToolLine(
@@ -462,8 +532,23 @@ class ChatController(private val app: KeepAgentApp) {
                     ),
                 )
             }
+            if (st.activities.isNotEmpty()) {
+                st.activities.forEachIndexed { i, activity ->
+                    when (activity.type) {
+                        "thinking" -> run.appendThinking(activity.text)
+                        "tool" -> activity.tool?.let { restoreTool(i, it) }
+                        "notice" -> run.addNotice(activity.text)
+                    }
+                }
+            } else {
+                if (st.thinking.isNotEmpty()) run.appendThinking(st.thinking)
+                st.tools.forEachIndexed(::restoreTool)
+            }
             val err = st.error
-            if (err != null) run.fail(err) else run.complete()
+            if (st.inProgress) {
+                run.addNotice("Android interrupted this turn after its last checkpoint. Review completed tool results, then retry; KeepAgent will not replay it automatically.")
+                run.fail(TurnRecovery.failureFor(true)!!)
+            } else if (err != null) run.fail(err) else run.complete()
             run.addUsage(st.usagePrompt, st.usageCompletion)
             if (st.elapsedMs > 0) run.finishedAtMillis = run.createdAtMillis + st.elapsedMs
             Turn(
@@ -479,6 +564,8 @@ class ChatController(private val app: KeepAgentApp) {
     }
 
     /** Persists the active session (call after a turn settles). */
+    private val sessionSaveMutex = Mutex()
+
     private fun saveSession() {
         val id = _activeSessionId ?: ChatStore.newId().also { _activeSessionId = it }
         val turns = _turns.value
@@ -495,8 +582,26 @@ class ChatController(private val app: KeepAgentApp) {
             createdAt = createdAt,
             updatedAt = now,
             turns = turns.map { snapshot(it) },
+            workspace = app.workspaceManager.activeName(),
+            memorySummary = memorySummary,
         )
-        scope.launch(Dispatchers.IO) { store.save(session) }
+        scope.launch(Dispatchers.IO) { sessionSaveMutex.withLock { store.save(session) } }
+    }
+
+    /** Compact, provider-neutral state for a project handoff bundle. */
+    fun handoffSnapshot(): ChatSession? {
+        val turns = _turns.value
+        if (turns.isEmpty()) return null
+        val now = System.currentTimeMillis()
+        return ChatSession(
+            id = _activeSessionId ?: "unsaved",
+            title = _sessionTitle.value,
+            createdAt = now,
+            updatedAt = now,
+            turns = turns.takeLast(3).map(::snapshot),
+            workspace = app.workspaceManager.activeName(),
+            memorySummary = memorySummary,
+        )
     }
 
     private fun snapshot(t: Turn): StoredTurn {
@@ -512,12 +617,30 @@ class ChatController(private val app: KeepAgentApp) {
             tools = run.toolLines.value.map {
                 StoredTool(it.name, it.summary, it.status.name, it.detail, it.extra)
             },
+            activities = run.activities.value.map { activity ->
+                when (activity) {
+                    is RunActivity.Thinking -> StoredActivity("thinking", text = activity.text)
+                    is RunActivity.Notice -> StoredActivity("notice", text = activity.text)
+                    is RunActivity.Tool -> StoredActivity(
+                        "tool",
+                        tool = activity.line.let {
+                            StoredTool(it.name, it.summary, it.status.name, it.detail, it.extra)
+                        },
+                    )
+                }
+            },
             modelId = t.modelId,
             sentPrompt = t.sentPrompt.takeIf { it.isNotEmpty() },
             usagePrompt = u.promptTokens,
             usageCompletion = u.completionTokens,
             elapsedMs = run.elapsedMs,
             interrupted = run.status.value == AgentRun.Status.CANCELED,
+            inProgress = run.status.value == AgentRun.Status.RUNNING,
         )
+    }
+
+    private companion object {
+        const val MEMORY_PREFIX = "Summary of earlier conversation:\n"
+        const val DURABLE_RECENT_TURNS = 3
     }
 }

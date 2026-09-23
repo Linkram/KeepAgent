@@ -3,9 +3,12 @@
 
     <!-- The app talks to user-configured LLM endpoints (OpenRouter, local). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Foreground service keeps the process alive while an agent turn runs. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".KeepAgentApp"
@@ -53,6 +56,12 @@
                 android:value="long-running agent conversation turn" />
         </service>
 
+        <service
+            android:name=".runtime.RuntimeWorkerService"
+            android:exported="false"
+            android:process=":runtime"
+            android:stopWithTask="false" />
+
         <!-- Stop action on the running-turn notification. -->
         <receiver
             android:name=".StopReceiver"
@@ -61,6 +70,10 @@
                 <action android:name="io.keepagent.action.STOP_AGENT" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".ApprovalReceiver"
+            android:exported="false" />
 
         <!-- Shares workspace files and zips out of the app's own storage. -->
         <provider

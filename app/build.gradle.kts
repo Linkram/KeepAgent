@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.chaquopy)
 }
 
 android {
@@ -12,9 +14,10 @@ android {
         applicationId = "io.keepagent"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.1.0-m1.4i"
+        versionCode = 8
+        versionName = "0.1.0-m1.4k"
         vectorDrawables { useSupportLibrary = true }
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     buildTypes {
@@ -32,6 +35,33 @@ android {
     }
     buildFeatures {
         compose = true
+        aidl = true
+    }
+}
+
+// javac on ART has no desktop JDK module image. Package the compile SDK's API
+// stubs as its boot class path; every Android build already has this file.
+val prepareJavaPlatform by tasks.registering(Copy::class) {
+    from(android.sdkDirectory.resolve("platforms/android-${android.compileSdk}")) {
+        include("android.jar", "core-for-system-modules.jar")
+    }
+    into(layout.buildDirectory.dir("generated/java-platform/java-platform"))
+}
+android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/java-platform"))
+tasks.matching {
+    (it.name.startsWith("merge") && it.name.endsWith("Assets")) ||
+        it.name.contains("Lint") || it.name.startsWith("lint")
+}.configureEach {
+    dependsOn(prepareJavaPlatform)
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.13"
+        pip {
+            install("pytest==9.1.1")
+            install("requests==2.34.2")
+        }
     }
 }
 
@@ -60,6 +90,8 @@ dependencies {
     // Overrides Compose 1.7's older native path library with the 16 KiB-page
     // compatible stable AndroidX release.
     implementation(libs.androidx.graphics.path)
+    implementation(libs.nb.javac.android)
+    implementation(libs.r8)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)

@@ -14,6 +14,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -67,9 +69,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +86,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import io.keepagent.addonsapi.llm.ImagePart
 import io.keepagent.app.ChatController
@@ -92,6 +99,7 @@ import io.keepagent.app.ui.common.DiffView
 import io.keepagent.app.ui.common.FileOpener
 import io.keepagent.app.ui.common.MarkdownText
 import io.keepagent.core.agent.AgentRun
+import io.keepagent.core.agent.RunActivity
 import io.keepagent.core.agent.ApprovalMode
 import io.keepagent.core.agent.ApprovalRequest
 import io.keepagent.core.agent.ToolLine
@@ -102,6 +110,7 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.max
+import kotlin.math.roundToInt
 import io.keepagent.app.ui.theme.AgentBubble
 import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BarChip
@@ -219,11 +228,14 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
         ChatHeader(sessionTitle = sessionTitle)
         HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f), thickness = 1.dp)
 
-        LazyColumn(
-            state = listState,
+        Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
+        ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -260,6 +272,8 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
                         isLast = index == turns.lastIndex,
                         onRetry = { controller.retryLast() },
                         onCopy = ::copyText,
+                        onFork = { controller.forkFrom(index) },
+                        onDelete = { controller.deleteTurn(index) },
                         onOpenFile = { p -> FileOpener.open(p); onOpenFileInWorkspaces(p) },
                     )
                 }
@@ -269,6 +283,8 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
                     ApprovalCard(pendingApproval!!, onDecide = controller::decideApproval)
                 }
             }
+        }
+        ChatFastScroller(listState, Modifier.align(Alignment.CenterEnd))
         }
 
         // Keep the conversation (and any pending approval card, whose buttons
@@ -368,8 +384,7 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
                     currentModel = modelId,
                     modelsError = modelsError,
                     onModelSelected = { id ->
-                        app.settingsStore.setString(SettingsStore.NS_MODEL, "model", id)
-                        app.connections.syncActiveFromProfile()
+                        controller.selectModel(id)
                         showChatSettings = false
                     },
                     onRetryModels = { controller.refreshModels(force = true) },
@@ -415,6 +430,108 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
             }
         }
         zoomImage?.let { part -> ZoomImageDialog(part, onDismiss = { zoomImage = null }) }
+    }
+}
+
+/**
+ * Draggable fast-scroll thumb for conversations whose measured content spans
+ * multiple screens. It tracks pixel offsets inside a single enormous response,
+ * unlike item-only jump controls which cannot navigate within that response.
+ */
+@Composable
+private fun ChatFastScroller(state: LazyListState, modifier: Modifier = Modifier) {
+    var trackHeightPx by remember { mutableStateOf(0) }
+    val scrollScope = rememberCoroutineScope()
+    val info = state.layoutInfo
+    val visible = info.visibleItemsInfo
+    if (visible.isEmpty()) return
+
+    val viewportPx = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
+    val averageItemPx = visible.map { it.size }.average().takeIf { !it.isNaN() } ?: viewportPx.toDouble()
+    val estimatedTotalPx = (averageItemPx * info.totalItemsCount).coerceAtLeast(viewportPx.toDouble())
+    val maxScrollPx = (estimatedTotalPx - viewportPx).coerceAtLeast(0.0)
+    if (maxScrollPx < viewportPx) return
+
+    val first = visible.first()
+    val absoluteOffsetPx = (first.index * averageItemPx - first.offset + info.viewportStartOffset)
+        .coerceIn(0.0, maxScrollPx)
+    val progress = if (maxScrollPx > 0.0) absoluteOffsetPx / maxScrollPx else 0.0
+    val density = LocalDensity.current
+    val minimumThumbPx = with(density) { 42.dp.toPx() }
+    val usableTrackPx = (if (trackHeightPx > 0) trackHeightPx else viewportPx).toFloat()
+    val thumbHeightPx = (usableTrackPx * viewportPx / estimatedTotalPx)
+        .toFloat()
+        .coerceIn(minOf(minimumThumbPx, usableTrackPx), usableTrackPx)
+    val travelPx = (usableTrackPx - thumbHeightPx).coerceAtLeast(1f)
+    val thumbOffsetPx = (progress * travelPx).roundToInt()
+
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(30.dp)
+            .onGloballyPositioned { trackHeightPx = it.size.height }
+            .pointerInput(state, trackHeightPx) {
+                var seekJob: kotlinx.coroutines.Job? = null
+                fun seekTo(y: Float) {
+                    val live = state.layoutInfo
+                    val items = live.visibleItemsInfo
+                    if (items.isEmpty()) return
+                    val viewport = (live.viewportEndOffset - live.viewportStartOffset).coerceAtLeast(1)
+                    val average = items.map { it.size }.average().coerceAtLeast(1.0)
+                    val total = (average * live.totalItemsCount).coerceAtLeast(viewport.toDouble())
+                    val maxScroll = (total - viewport).coerceAtLeast(0.0)
+                    val track = trackHeightPx.coerceAtLeast(1).toFloat()
+                    val minThumb = 42.dp.toPx()
+                    val thumb = (track * viewport / total).toFloat().coerceIn(minOf(minThumb, track), track)
+                    val travel = (track - thumb).coerceAtLeast(1f)
+                    val fraction = ((y - thumb / 2f) / travel).coerceIn(0f, 1f)
+                    val targetPx = fraction * maxScroll
+                    val targetIndex = (targetPx / average).toInt()
+                        .coerceIn(0, (live.totalItemsCount - 1).coerceAtLeast(0))
+                    val itemOffset = (targetPx - targetIndex * average).roundToInt().coerceAtLeast(0)
+                    seekJob?.cancel()
+                    seekJob = scrollScope.launch { state.scrollToItem(targetIndex, itemOffset) }
+                }
+
+                fun snapNearTurn() {
+                    val pendingSeek = seekJob
+                    seekJob = scrollScope.launch {
+                        pendingSeek?.join()
+                        val live = state.layoutInfo
+                        val threshold = 64.dp.toPx()
+                        val nearest = live.visibleItemsInfo.minByOrNull {
+                            kotlin.math.abs(it.offset - live.viewportStartOffset)
+                        } ?: return@launch
+                        if (kotlin.math.abs(nearest.offset - live.viewportStartOffset) <= threshold) {
+                            state.animateScrollToItem(nearest.index)
+                        }
+                    }
+                }
+
+                var pointerY = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { start ->
+                        pointerY = start.y
+                        seekTo(pointerY)
+                    },
+                    onDragEnd = { snapNearTurn() },
+                    onDragCancel = { snapNearTurn() },
+                ) { change, dragAmount ->
+                    change.consume()
+                    pointerY = (pointerY + dragAmount).coerceIn(0f, size.height.toFloat())
+                    seekTo(pointerY)
+                }
+            },
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(0, thumbOffsetPx) }
+                .width(7.dp)
+                .height(with(density) { thumbHeightPx.toDp() })
+                .clip(RoundedCornerShape(99.dp))
+                .background(TextSecondary.copy(alpha = 0.72f)),
+        )
     }
 }
 
@@ -637,36 +754,45 @@ private fun RunView(
     isLast: Boolean,
     onRetry: () -> Unit,
     onCopy: (String) -> Unit,
+    onFork: () -> Unit,
+    onDelete: () -> Unit,
     onOpenFile: (String) -> Unit,
 ) {
     val text by run.text.collectAsState()
-    val thinking by run.thinking.collectAsState()
-    val toolLines by run.toolLines.collectAsState()
+    val activities by run.activities.collectAsState()
     val status by run.status.collectAsState()
     val error by run.error.collectAsState()
     val usage = run.usage
     val elapsed = run.elapsedMs
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (thinking.isNotEmpty()) {
-            ThinkingBlock(
-                label = if (status == AgentRun.Status.RUNNING) "Thinking…" else "Thought (tap to view)",
-                content = thinking,
-            )
-        }
-        toolLines.forEach { line ->
-            ToolLineView(line, onOpenFile = onOpenFile)
-        }
-        // Mockup-style header inside the reply bubble.
         val bubbleHeader = when {
-            thinking.isNotEmpty() -> "Thought for ${shortElapsed(elapsed)}"
+            status == AgentRun.Status.RUNNING -> "Working for ${shortElapsed(elapsed)}"
             status == AgentRun.Status.DONE && elapsed > 0 -> "Worked for ${shortElapsed(elapsed)}"
             else -> null
         }
-        if (text.isNotEmpty()) {
-            AgentBubble(text, onCopy, bubbleHeader)
+        if (text.isNotEmpty() || activities.isNotEmpty()) {
+            AgentBubble(
+                text = text,
+                onCopy = onCopy,
+                header = bubbleHeader,
+                activities = activities,
+                streaming = status == AgentRun.Status.RUNNING,
+                onOpenFile = onOpenFile,
+                onFork = onFork,
+                onDelete = onDelete,
+            )
         } else if (status == AgentRun.Status.RUNNING) {
-            AgentBubble(text = "…", onCopy = {}, header = "Working…")
+            AgentBubble(
+                text = "…",
+                onCopy = {},
+                header = "Working…",
+                activities = emptyList(),
+                streaming = true,
+                onOpenFile = onOpenFile,
+                onFork = {},
+                onDelete = {},
+            )
         }
         if (status == AgentRun.Status.CANCELED) {
             Text(
@@ -772,7 +898,7 @@ private fun UserBubble(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (text.isNotBlank()) {
-                            Text(text, color = UserBubbleText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(text, color = UserBubbleText, fontSize = 16.sp)
                         }
                     turn.images.forEach { part ->
                         ImagePartView(part, Modifier.height(72.dp).clickable { onZoomImage(part) })
@@ -802,18 +928,18 @@ private fun UserBubble(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    BubbleActionButton(R.drawable.ic_edit, "edit") {
+                    BubbleActionButton(R.drawable.ic_edit, "Edit message") {
                         editDialogOpen = true
                     }
-                    BubbleActionButton(R.drawable.ic_branch, "branch") {
+                    BubbleActionButton(R.drawable.ic_branch, "Branch from here") {
                         actionsOpen = false
                         onFork()
                     }
-                    BubbleActionButton(null, "copy") {
+                    BubbleActionButton(R.drawable.ic_copy, "Copy message") {
                         onCopy(text.ifEmpty { "(no text)" })
                         actionsOpen = false
                     }
-                    BubbleActionButton(R.drawable.ic_delete, "delete") {
+                    BubbleActionButton(R.drawable.ic_delete, "Delete from here") {
                         actionsOpen = false
                         onDelete()
                     }
@@ -862,27 +988,24 @@ private fun UserBubble(
     }
 }
 
-/** Compact action pill in the message action row (icon + label). */
+/** Compact icon-only action; the label remains available to TalkBack. */
 @Composable
-private fun BubbleActionButton(iconRes: Int?, label: String, onClick: () -> Unit) {
-    Row(
+private fun BubbleActionButton(iconRes: Int, label: String, onClick: () -> Unit) {
+    Box(
         modifier = Modifier
+            .size(48.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(TileStone)
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(10.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        if (iconRes != null) {
-            Icon(
-                painter = painterResource(iconRes),
-                contentDescription = null,
-                tint = TextPrimary,
-                modifier = Modifier.size(11.dp),
-            )
-        }
-        Text(label, fontSize = 10.sp, color = TextPrimary)
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = label,
+            tint = TextPrimary,
+            modifier = Modifier.size(19.dp),
+        )
     }
 }
 
@@ -993,7 +1116,18 @@ private fun ImagePartView(part: ImagePart, modifier: Modifier = Modifier) {
 
 /** Agent reply rendered as markdown; tap copies, long-press selects. */
 @Composable
-private fun AgentBubble(text: String, onCopy: (String) -> Unit, header: String? = null) {
+private fun AgentBubble(
+    text: String,
+    onCopy: (String) -> Unit,
+    header: String? = null,
+    activities: List<RunActivity>,
+    streaming: Boolean,
+    onOpenFile: (String) -> Unit,
+    onFork: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var workExpanded by remember { mutableStateOf(false) }
+    var actionsOpen by remember { mutableStateOf(false) }
     // Mockup bubble: wide dark block, italic "worked/thought for …" header,
     // speech tail at bottom-left.
     Column {
@@ -1002,24 +1136,124 @@ private fun AgentBubble(text: String, onCopy: (String) -> Unit, header: String? 
                 .fillMaxWidth(0.82f)
                 .clip(RoundedCornerShape(4.dp, 12.dp, 12.dp, 4.dp))
                 .background(AgentBubble)
-                .clickable { onCopy(text) }
+                .clickable { actionsOpen = !actionsOpen }
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (header != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (header != null || activities.isNotEmpty()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                    if (header != null) {
                     Text(
                         text = header,
                         fontSize = 10.sp,
                         fontStyle = FontStyle.Italic,
                         color = TextSecondary,
                     )
+                    }
+                    if (activities.isNotEmpty()) {
+                        WorkDisclosure(workExpanded) { workExpanded = !workExpanded }
+                    }
+                    }
                 }
-                SelectionContainer {
-                    MarkdownText(text, color = TextPrimary, fontSize = 14.sp)
+                if (workExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        activities.forEachIndexed { index, activity ->
+                            when (activity) {
+                                is RunActivity.Thinking -> ThinkingActivityView(activity.text)
+                                is RunActivity.Tool -> ToolLineView(activity.line, onOpenFile)
+                                is RunActivity.Notice -> Text(
+                                    activity.text,
+                                    fontSize = 10.sp,
+                                    color = TextSecondary,
+                                    fontStyle = FontStyle.Italic,
+                                )
+                            }
+                            if (index != activities.lastIndex) {
+                                Text("↓", fontSize = 9.sp, color = TextSecondary)
+                            }
+                        }
+                    }
+                }
+                if (text.isNotEmpty()) {
+                    SelectionContainer {
+                        // Markdown parsing is intentionally deferred until the stream
+                        // settles; reparsing a very long document for every token caused
+                        // the old long-response slowdown.
+                        if (streaming) {
+                            Text(text, color = TextPrimary, fontSize = 16.sp)
+                        } else {
+                            MarkdownText(text, color = TextPrimary, fontSize = 16.sp)
+                        }
+                    }
                 }
             }
         }
         BubbleTail(color = AgentBubble, tailEnd = false, modifier = Modifier.padding(end = 14.dp))
+        if (actionsOpen && !streaming) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+            ) {
+                BubbleActionButton(R.drawable.ic_branch, "Branch from this response") {
+                    actionsOpen = false
+                    onFork()
+                }
+                BubbleActionButton(R.drawable.ic_copy, "Copy response") {
+                    actionsOpen = false
+                    onCopy(text)
+                }
+                BubbleActionButton(R.drawable.ic_delete, "Delete from this response") {
+                    actionsOpen = false
+                    onDelete()
+                }
+            }
+        }
+    }
+}
+
+/** Bare mockup-style disclosure chevron beside the elapsed-time label. */
+@Composable
+private fun WorkDisclosure(expanded: Boolean, onClick: () -> Unit) {
+    Canvas(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .semantics { contentDescription = if (expanded) "Collapse work" else "Expand work" }
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+    ) {
+        val path = Path().apply {
+            if (expanded) {
+                moveTo(size.width * 0.18f, size.height * 0.68f)
+                lineTo(size.width * 0.5f, size.height * 0.36f)
+                lineTo(size.width * 0.82f, size.height * 0.68f)
+            } else {
+                moveTo(size.width * 0.18f, size.height * 0.34f)
+                lineTo(size.width * 0.5f, size.height * 0.66f)
+                lineTo(size.width * 0.82f, size.height * 0.34f)
+            }
+        }
+        drawPath(path, color = TextSecondary, style = Stroke(width = 2.dp.toPx()))
+    }
+}
+
+@Composable
+private fun ThinkingActivityView(content: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(ThinkingInset)
+            .border(1.dp, BevelLight, RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text("Thinking", fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+        Text(content.ifEmpty { "…" }, fontSize = 11.sp, color = TextSecondary)
     }
 }
 
@@ -1341,7 +1575,7 @@ private fun InputBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box {
-                IconButton(onClick = { attachMenu = true }, modifier = Modifier.size(34.dp)) {
+                IconButton(onClick = { attachMenu = true }, modifier = Modifier.size(48.dp)) {
                     Icon(
                         painter = painterResource(R.drawable.ic_attach),
                         contentDescription = "attach",

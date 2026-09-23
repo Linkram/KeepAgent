@@ -17,6 +17,30 @@ without a computer.
 
 That's the whole loop: ask → approve → the agent works → you see the result.
 
+## Run and test on a computer
+
+The desktop runner is optional; KeepAgent's core phone workflow does not require it.
+Use it only when a project needs a desktop-only runtime, native desktop application,
+or a workload you deliberately want to offload. Install it from
+[`../companion/README.md`](../companion/README.md), then open
+**Tools** in the bottom navigation, enter its address and pairing token, then check the
+connection. The agent gains tools for commands, files, headless Chromium, real Electron
+apps, configured MCP servers and an explicitly configured Android emulator/device.
+
+Commands and tests continue on the companion if the phone disconnects. Open **Tools**
+and refresh jobs to inspect state, exit code, output and screenshots. A queued/running
+job has not passed; success requires a zero exit or passing structured assertions.
+
+The companion runs as your computer account. Keep it on loopback or behind an encrypted
+private tunnel, and pair it only with the project directory you intend to expose.
+
+## Mobile navigation
+
+Phones use four thumb-reachable destinations: **Chat**, **Files**, **Test**, and
+**Tools**. Tools contains models, add-ons, activity, help and execution targets. Wider
+screens use a navigation rail. Android Back returns secondary tools to Tools and primary
+destinations to Chat. Chat text uses the system reading font and larger body sizing.
+
 ## Chat
 
 - **Streaming + thinking.** The reply streams token by token; models that
@@ -75,14 +99,56 @@ it (in *workspace* file-access mode).
   tap a file to read it, delete stray files, or open one in Chat context.
 - **Share → KeepAgent** from other apps drops a file straight into the
   active workspace and opens a chat with it attached.
+- To continue a public GitHub/GitLab-style project, enter a new project name,
+  paste its HTTP(S) clone URL, and tap **Clone public Git repository**. The app
+  keeps the full included Git history and opens the project after cloning.
+- To move a local/private project without giving KeepAgent remote credentials,
+  export it as a ZIP, enter a new project name, and tap **Import ZIP as new
+  project**. Existing project names are never overwritten.
+- **share zip** adds `.keepagent/handoff.json` to the exported source bundle. It
+  carries bounded recent goal/decision context plus Git branch, commit and dirty
+  hashes. Re-importing the bundle lets the agent resume from that neutral handoff;
+  it does not claim unrecorded tests passed or copy provider credentials.
+
+Saved model API keys and provider records are AES-GCM encrypted with a
+non-exportable Android Keystore key. Older plaintext settings migrate when read.
+If Android restores preferences onto a device without the original key, KeepAgent
+clears the unusable credential and asks you to enter it again.
 
 ## Test tab
 
+Test now opens a project overview. It discovers Python tests and HTML previews while
+skipping dependency/build directories. Tap **Run Python tests** to execute pytest on
+the phone, then expand the result or send it into the Chat draft. Runs continue across
+tab changes; the last 20 results survive an app restart. A run interrupted by Android
+is marked interrupted and must be started again explicitly. Node and Gradle
+projects show missing-runtime explanations. **Open preview** enters the web viewer;
+Back returns to project tests. Refresh rescans the workspace without running code.
+
 For web projects: the Test tab serves your workspace over loopback and loads
-a page in a built-in browser. Pick a viewport preset (phone / desktop),
-open a URL path (`index.html`), and read the **console** — logs, warnings,
-and errors — the same evidence you'd get in desktop devtools. This is what
-the agent will drive itself in the next milestone.
+a page in a built-in browser. Choose an HTML page, tap **Open**, inspect the
+preview and console summary, then tap **Send evidence to agent** to attach a
+real PNG capture and console output to Chat.
+
+The top-right **Fit** menu contains phone, tablet, and desktop viewport sizes.
+Reload, history navigation, external-browser, fullscreen, rotation, page-list
+refresh, and save-capture actions are in the overflow menu so the normal test
+flow stays focused. If the project has no HTML page, **Create a starter page**
+creates and opens `index.html`.
+
+## On-device runtimes
+
+KeepAgent includes Python 3.13, pytest, HTTP requests, and QuickJS in the app.
+The agent can run a workspace-relative Python script or pytest selection through
+the approval-gated `run_python` tool without a paired computer or a second app.
+Open **Tools → On this phone** to verify the packaged runtime versions. Output is
+bounded and execution is confined to paths under the active workspace, although
+executed code still has the app's own network and private-storage permissions.
+
+Packages with Android-compatible wheels must be selected when KeepAgent is built;
+ordinary desktop wheels and OS-specific dependencies do not automatically become
+Android-compatible. Future large runtime packs will be optional and explicit rather
+than silently downloading on every launch.
 
 ## Console
 
@@ -128,3 +194,13 @@ only write into the current workspace, and only when you say so.
 3. A `stopped at the 12 tool-call limit` note at the end of a reply means
    the agent hit its per-turn budget; just send **continue**.
 4. If a JS add-on looks dead, disable and re-enable it from **Add-ons**.
+# Import an existing project (2026-09-04)
+
+Open Workspaces, tap the current project name to open the project chooser, and
+enter a new name. Paste a public HTTP(S) Git clone URL, or tap **Import ZIP as new
+project** and select an archive through Android's file picker.
+
+Include AGENTS.md, CLAUDE.md, PLAN.md, or HANDOFF.md to carry project guidance
+across. KeepAgent reads bounded root-file excerpts on each turn. Included `.git`
+files are copied, but desktop chats, installed dependencies, executable bits and
+symlinks are not restored. See [the product spec](PRODUCT_SPEC.md) for limits.

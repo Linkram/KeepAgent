@@ -46,7 +46,7 @@ fun MarkdownText(
     text: String,
     modifier: Modifier = Modifier,
     color: Color = TextPrimary,
-    fontSize: TextUnit = 14.sp,
+    fontSize: TextUnit = 16.sp,
 ) {
     val blocks = remember(text) { Markdown.parse(text) }
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -54,7 +54,7 @@ fun MarkdownText(
             when (block) {
                 is MdBlock.Code -> CodeBlock(block.lang, block.content, color)
                 is MdBlock.Heading -> {
-                    val hSize = (fontSize.value + block.level * 1.5f).sp
+                    val hSize = (fontSize.value + (7 - block.level.coerceIn(1, 6)) * 1.5f).sp
                     Text(
                         text = renderInline(block.src, color, hSize),
                         fontSize = hSize,

@@ -34,6 +34,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -47,6 +51,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,15 +72,13 @@ import io.keepagent.app.ui.theme.BevelLight
 import io.keepagent.app.ui.theme.TextPrimary
 import io.keepagent.app.ui.theme.TextSecondary
 import io.keepagent.app.ui.theme.TileStone
-import io.keepagent.app.ui.theme.UserBubble
 import io.keepagent.app.test.TestServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * Test tab (M1.2, F-006 groundwork): renders a workspace HTML file in a
@@ -83,7 +88,7 @@ import java.nio.ByteOrder
  */
 @SuppressLint("SetJavaScriptEnabled") // The local web test runner must execute workspace JavaScript.
 @Composable
-fun TestTab(onGotoChat: () -> Unit) {
+fun WebPreviewTab(onGotoChat: () -> Unit) {
     val app = Holder.app
     val fs = app.fileService
     val scope = rememberCoroutineScope()
@@ -101,6 +106,9 @@ fun TestTab(onGotoChat: () -> Unit) {
     var lastShot = remember { mutableStateOf<Bitmap?>(null) }
     var consoleLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var consoleOpen by remember { mutableStateOf(false) }
+    var pageMenuOpen by remember { mutableStateOf(false) }
+    var viewportMenuOpen by remember { mutableStateOf(false) }
+    var moreMenuOpen by remember { mutableStateOf(false) }
 
     // Back/forward + viewport presets + open-in-browser (M1.4h).
     var viewport by remember { mutableStateOf("full") } // full | phone | tablet | desktop
@@ -205,7 +213,7 @@ fun TestTab(onGotoChat: () -> Unit) {
                     { name ->
                         refreshFiles()
                         load(name)
-                        notice = "created $name — load a page to test"
+                        notice = "created and opened $name"
                     },
                     { e -> notice = "create failed: ${e.message}" },
                 )
@@ -235,11 +243,11 @@ fun TestTab(onGotoChat: () -> Unit) {
                 capturing = false
                 if (result == PixelCopy.SUCCESS) {
                     lastShot.value = bmp
-                    val bytes = ByteArray(bmp.allocationByteCount)
-                    bmp.copyPixelsToBuffer(ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()))
-                    app.chatController.attachImage(
-                        ImagePart("image/png", Base64.encodeToString(bytes, Base64.NO_WRAP)),
-                    )
+                    val png = ByteArrayOutputStream().use { output ->
+                        check(bmp.compress(Bitmap.CompressFormat.PNG, 100, output))
+                        output.toByteArray()
+                    }
+                    app.chatController.attachImage(ImagePart("image/png", Base64.encodeToString(png, Base64.NO_WRAP)))
                     attachConsoleToChat()
                     notice = "screenshot attached — opening Chat"
                     onGotoChat()
@@ -260,145 +268,131 @@ fun TestTab(onGotoChat: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
         if (!fullscreen) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Preview & debug", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Text("App preview", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                     Text(
-                        "Run a workspace page, inspect it, then send evidence to the agent",
-                        fontSize = 9.sp,
+                        loadedRel?.let { "Previewing $it" } ?: "Open a page, inspect it, send evidence",
+                        fontSize = 11.sp,
                         color = TextSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Spacer(modifier = Modifier.width(6.dp))
-                CompactTestAction("full") { fullscreen = true }
-                Spacer(modifier = Modifier.width(6.dp))
-                CompactTestAction(if (landscape) "upright" else "rotate") {
-                    setLandscape(!landscape)
-                }
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                TextField(
-                    value = path,
-                    onValueChange = { path = it },
-                    placeholder = { Text("index.html", fontSize = 12.sp) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = TileStone,
-                        unfocusedContainerColor = TileStone,
-                        focusedIndicatorColor = BevelLight,
-                        unfocusedIndicatorColor = BevelLight,
-                    ),
-                )
-                CompactTestAction("Load") { load(path) }
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CompactTestAction("reload") { webViewRef.value?.reload() }
-                CompactTestAction(
-                    label = "◂ back",
-                    onClick = { webViewRef.value?.goBack() },
-                    enabled = canBack,
-                )
-                CompactTestAction(
-                    label = "fwd ▸",
-                    onClick = { webViewRef.value?.goForward() },
-                    enabled = canFwd,
-                )
-                CompactTestAction(
-                    label = "browser",
-                    enabled = loadedPath != null,
-                    onClick = {
-                        val u = loadedPath
-                        if (u != null) {
-                            runCatching {
-                                context.startActivity(
-                                    Intent.createChooser(
-                                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(u)),
-                                        "open in browser",
-                                    ),
-                                )
-                            }
-                        }
-                    },
-                )
-                Text(
-                    text = "viewport:",
-                    fontSize = 10.sp,
-                    color = TextSecondary,
-                )
-                listOf("full", "phone 390×844", "tablet 768×1024", "desktop 1280×800").forEach { label ->
-                    val id = label.substringBefore(' ')
+                Box {
                     Text(
-                        text = label.substringAfter(' ', label).replace("full", "fit"),
-                        fontSize = 10.sp,
-                        color = if (viewport == id) TextPrimary else TextSecondary,
+                        text = when (viewport) {
+                            "phone" -> "Phone"
+                            "tablet" -> "Tablet"
+                            "desktop" -> "Desktop"
+                            else -> "Fit"
+                        } + "  ▾",
+                        fontSize = 12.sp,
+                        color = TextPrimary,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(
-                                if (viewport == id)
-                                    io.keepagent.app.ui.theme.TileStoneSelected
-                                else Color.Transparent,
-                            )
-                            .clickable { viewport = id }
-                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                            .sizeIn(minWidth = 72.dp, minHeight = 48.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TileStone)
+                            .clickable { viewportMenuOpen = true }
+                            .padding(horizontal = 12.dp, vertical = 15.dp),
                     )
+                    DropdownMenu(expanded = viewportMenuOpen, onDismissRequest = { viewportMenuOpen = false }) {
+                        listOf(
+                            "full" to "Fit screen",
+                            "phone" to "Phone · 390 × 844",
+                            "tablet" to "Tablet · 768 × 1024",
+                            "desktop" to "Desktop · 1280 × 800",
+                        ).forEach { (id, label) ->
+                            DropdownMenuItem(
+                                text = { Text(if (viewport == id) "✓  $label" else label) },
+                                onClick = { viewport = id; viewportMenuOpen = false },
+                            )
+                        }
+                    }
                 }
-            }
-            if (htmlFiles.isEmpty()) {
-                Button(onClick = { createStarterPage() }) {
-                    Text("no html files — create index.html", fontSize = 11.sp)
-                }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    htmlFiles.take(20).forEach { f ->
-                        Text(
-                            text = f,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = if (loadedRel == f) UserBubble else TextSecondary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(TileStone)
-                                .clickable {
-                                    path = f
-                                    load(f)
-                                }
-                                .padding(horizontal = 6.dp, vertical = 3.dp),
-                        )
+                Box {
+                    IconButton(onClick = { moreMenuOpen = true }, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More preview actions", tint = TextPrimary)
+                    }
+                    DropdownMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
+                        DropdownMenuItem(text = { Text("Reload page") }, enabled = loadedPath != null, onClick = {
+                            webViewRef.value?.reload(); moreMenuOpen = false
+                        })
+                        DropdownMenuItem(text = { Text("Go back") }, enabled = canBack, onClick = {
+                            webViewRef.value?.goBack(); moreMenuOpen = false
+                        })
+                        DropdownMenuItem(text = { Text("Go forward") }, enabled = canFwd, onClick = {
+                            webViewRef.value?.goForward(); moreMenuOpen = false
+                        })
+                        DropdownMenuItem(text = { Text("Open in browser") }, enabled = loadedPath != null, onClick = {
+                            loadedPath?.let { u ->
+                                runCatching { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(u)), "open in browser")) }
+                            }
+                            moreMenuOpen = false
+                        })
+                        DropdownMenuItem(text = { Text("Fullscreen preview") }, enabled = loadedPath != null, onClick = {
+                            fullscreen = true; moreMenuOpen = false
+                        })
+                        DropdownMenuItem(text = { Text(if (landscape) "Return to portrait" else "Rotate to landscape") }, onClick = {
+                            setLandscape(!landscape); moreMenuOpen = false
+                        })
+                        DropdownMenuItem(text = { Text("Refresh page list") }, onClick = {
+                            refreshFiles(); moreMenuOpen = false
+                        })
+                        DropdownMenuItem(text = { Text("Save last capture") }, enabled = lastShot.value != null, onClick = {
+                            savePng(); moreMenuOpen = false
+                        })
                     }
                 }
             }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    TextField(
+                        value = path,
+                        onValueChange = { path = it },
+                        placeholder = { Text("index.html", fontSize = 13.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { pageMenuOpen = true },
+                                enabled = htmlFiles.isNotEmpty(),
+                            ) {
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose an HTML page")
+                            }
+                        },
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = TileStone,
+                            unfocusedContainerColor = TileStone,
+                            focusedIndicatorColor = BevelLight,
+                            unfocusedIndicatorColor = BevelLight,
+                        ),
+                    )
+                    DropdownMenu(expanded = pageMenuOpen, onDismissRequest = { pageMenuOpen = false }) {
+                        htmlFiles.take(30).forEach { file ->
+                            DropdownMenuItem(
+                                text = { Text(file, fontFamily = FontFamily.Monospace, maxLines = 1) },
+                                onClick = { path = file; pageMenuOpen = false; load(file) },
+                            )
+                        }
+                    }
+                }
+                Button(
+                    onClick = { load(path) },
+                    enabled = path.isNotBlank(),
+                    modifier = Modifier.heightIn(min = 56.dp),
+                ) { Text("Open") }
+            }
             notice?.let {
-                Text(
-                    text = it,
-                    fontSize = 10.sp,
-                    color = AmberStatus,
-                    maxLines = 2,
-                )
+                Text(it, fontSize = 11.sp, color = AmberStatus, maxLines = 2,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp))
             }
         }
 
@@ -475,11 +469,22 @@ fun TestTab(onGotoChat: () -> Unit) {
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            text = "no page loaded — enter a file path (e.g. index.html) and tap Load",
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(28.dp),
+                        ) {
+                            Text("Nothing to preview yet", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                            Text(
+                                if (htmlFiles.isEmpty()) "This workspace has no HTML pages." else "Choose a page above and open it.",
+                                fontSize = 13.sp, color = TextSecondary,
+                            )
+                            if (htmlFiles.isEmpty()) {
+                                Button(onClick = { createStarterPage() }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                    Text("Create a starter page")
+                                }
+                            }
+                        }
                     }
                 }
                 if (fullscreen) {
@@ -523,12 +528,17 @@ fun TestTab(onGotoChat: () -> Unit) {
                     color = if (consoleLines.any { it.startsWith("E") }) AmberStatus else TextSecondary,
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "clear",
-                    fontSize = 9.sp,
-                    color = TextSecondary,
-                    modifier = Modifier.clickable { consoleLines = emptyList() },
-                )
+                if (consoleLines.isNotEmpty()) {
+                    Text(
+                        text = "clear",
+                        fontSize = 9.sp,
+                        color = TextSecondary,
+                        modifier = Modifier
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .clickable { consoleLines = emptyList() }
+                            .padding(horizontal = 8.dp, vertical = 15.dp),
+                    )
+                }
             }
             if (consoleOpen && consoleLines.isNotEmpty()) {
                 Column(
@@ -549,54 +559,15 @@ fun TestTab(onGotoChat: () -> Unit) {
                     }
                 }
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CompactTestAction(
-                label = if (capturing) "capturing…" else "Send screenshot to agent",
-                enabled = loadedPath != null && !capturing,
+            Button(
                 onClick = { capture() },
-            )
-            CompactTestAction("save png") { savePng() }
-            CompactTestAction("refresh files") { refreshFiles() }
-            loadedPath?.let {
-                Text(
-                    text = "loaded: $it",
-                    fontSize = 9.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-            }
+                enabled = loadedPath != null && !capturing,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).heightIn(min = 52.dp),
+            ) {
+                Text(if (capturing) "Capturing evidence…" else "Send evidence to agent")
             }
         }
     }
-}
-
-@Composable
-private fun CompactTestAction(
-    label: String,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-) {
-    Text(
-        text = label,
-        fontSize = 10.sp,
-        color = if (enabled) TextPrimary else TextSecondary.copy(alpha = 0.45f),
-        modifier = Modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(TileStone)
-            .border(1.dp, BevelLight, RoundedCornerShape(5.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    )
 }
 
 /** Minimal page for the agent to inspect via Test tab screenshots (M1.4h). */

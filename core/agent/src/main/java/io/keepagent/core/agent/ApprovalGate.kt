@@ -103,9 +103,10 @@ class ApprovalGate(
             "gate",
             "approval requested: ${spec.name} (${spec.permission.name.lowercase()}) — $summary",
         )
-        val allowed = deferred.await()
-        _pending.value = null
-        decision = null
+        val allowed = try { deferred.await() } finally {
+            _pending.value = null
+            decision = null
+        }
         eventBus.emit(
             EventKind.APPROVAL,
             "gate",

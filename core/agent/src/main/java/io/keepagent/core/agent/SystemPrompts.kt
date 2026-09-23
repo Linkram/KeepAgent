@@ -16,6 +16,7 @@ object SystemPrompts {
                 .append("\". Paths are relative to it unless absolute.\n\n")
         }
         append("Tools: read, write, edit, glob, grep.\n\n")
+        append("Use additional tools only when present in the supplied schemas. Remote tools act on the paired computer, not phone files.\n")
         append("Rules:\n")
         append("1. Read a file before editing it.\n")
         append("2. Use glob or grep to find files you are unsure about.\n")

@@ -15,6 +15,13 @@ data class StoredTool(
     val extra: Map<String, String> = emptyMap(),
 )
 
+/** Thinking/tool/compaction entries in their original execution order. */
+data class StoredActivity(
+    val type: String,
+    val text: String = "",
+    val tool: StoredTool? = null,
+)
+
 /** A workspace file or folder attached to a user message (path + preview). */
 data class StoredFile(
     val path: String,
@@ -30,6 +37,7 @@ data class StoredTurn(
     val agentText: String = "",
     val thinking: String = "",
     val tools: List<StoredTool> = emptyList(),
+    val activities: List<StoredActivity> = emptyList(),
     val error: String? = null,
     /** Model id used for this turn. */
     val modelId: String? = null,
@@ -40,6 +48,8 @@ data class StoredTurn(
     val elapsedMs: Long = 0,
     /** True when the user stopped the turn before it finished. */
     val interrupted: Boolean = false,
+    /** True only in a checkpoint written while this turn was still executing. */
+    val inProgress: Boolean = false,
 )
 
 /** A persisted chat session: one JSON file under files/keepagent/chats/. */
@@ -49,7 +59,14 @@ data class ChatSession(
     val createdAt: Long,
     val updatedAt: Long,
     val turns: List<StoredTurn> = emptyList(),
+    val workspace: String? = null,
+    val memorySummary: String? = null,
 )
+
+internal object TurnRecovery {
+    const val INTERRUPTED_ERROR = "Interrupted when Android stopped KeepAgent"
+    fun failureFor(inProgress: Boolean): String? = INTERRUPTED_ERROR.takeIf { inProgress }
+}
 
 /**
  * Chat history persistence (M1.3). Sessions are plain JSON files, written
@@ -135,6 +152,20 @@ class ChatStore(rootDir: File) {
                     )
                 }
             }
+            val activities = mutableListOf<StoredActivity>()
+            val activityArr = to.optJSONArray("activities")
+            if (activityArr != null) {
+                for (i in 0 until activityArr.length()) {
+                    val ao = activityArr.getJSONObject(i)
+                    activities.add(
+                        StoredActivity(
+                            type = ao.optString("type"),
+                            text = ao.optString("text"),
+                            tool = ao.optJSONObject("tool")?.let(::parseTool),
+                        ),
+                    )
+                }
+            }
             turns.add(
                 StoredTurn(
                     userText = to.optString("user"),
@@ -144,12 +175,14 @@ class ChatStore(rootDir: File) {
                     thinking = to.optString("thinking"),
                     error = if (to.isNull("error")) null else to.optString("error"),
                     tools = tools,
+                    activities = activities,
                     modelId = to.optString("model").takeIf { m -> m.isNotEmpty() },
                     sentPrompt = to.optString("sent").takeIf { s -> s.isNotEmpty() },
                     usagePrompt = to.optInt("usagePrompt"),
                     usageCompletion = to.optInt("usageCompletion"),
                     elapsedMs = to.optLong("elapsedMs"),
                     interrupted = to.optBoolean("interrupted"),
+                    inProgress = to.optBoolean("inProgress"),
                 ),
             )
         }
@@ -159,6 +192,8 @@ class ChatStore(rootDir: File) {
             createdAt = o.optLong("createdAt"),
             updatedAt = o.optLong("updatedAt"),
             turns = turns,
+            workspace = o.optString("workspace").takeIf(String::isNotEmpty),
+            memorySummary = o.optString("memorySummary").takeIf(String::isNotEmpty),
         )
     }
 
@@ -168,6 +203,8 @@ class ChatStore(rootDir: File) {
         o.put("title", s.title)
         o.put("createdAt", s.createdAt)
         o.put("updatedAt", s.updatedAt)
+        if (s.workspace != null) o.put("workspace", s.workspace)
+        if (s.memorySummary != null) o.put("memorySummary", s.memorySummary)
         val turns = JSONArray()
         s.turns.forEach { t ->
             val to = JSONObject()
@@ -191,6 +228,7 @@ class ChatStore(rootDir: File) {
             if (t.usageCompletion > 0) to.put("usageCompletion", t.usageCompletion)
             if (t.elapsedMs > 0) to.put("elapsedMs", t.elapsedMs)
             if (t.interrupted) to.put("interrupted", true)
+            if (t.inProgress) to.put("inProgress", true)
             val tools = JSONArray()
             t.tools.forEach { tl ->
                 val jo = JSONObject()
@@ -206,6 +244,16 @@ class ChatStore(rootDir: File) {
                 tools.put(jo)
             }
             to.put("tools", tools)
+            if (t.activities.isNotEmpty()) {
+                val activities = JSONArray()
+                t.activities.forEach { activity ->
+                    val ao = JSONObject().put("type", activity.type)
+                    if (activity.text.isNotEmpty()) ao.put("text", activity.text)
+                    activity.tool?.let { ao.put("tool", serializeTool(it)) }
+                    activities.put(ao)
+                }
+                to.put("activities", activities)
+            }
             turns.put(to)
         }
         o.put("turns", turns)
@@ -215,5 +263,34 @@ class ChatStore(rootDir: File) {
     companion object {
         fun newId(): String =
             "${System.currentTimeMillis()}-${(Math.random() * 1_000_000).toLong()}"
+    }
+
+    private fun parseTool(jo: JSONObject): StoredTool {
+        val detail = jo.optString("detail")
+        val extra = mutableMapOf<String, String>()
+        jo.optJSONObject("extra")?.let { ex ->
+            val keys = ex.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                extra[key] = ex.optString(key)
+            }
+        }
+        return StoredTool(
+            name = jo.optString("name"),
+            summary = jo.optString("summary"),
+            status = jo.optString("status"),
+            detail = detail.takeIf(String::isNotEmpty),
+            extra = extra,
+        )
+    }
+
+    private fun serializeTool(tool: StoredTool): JSONObject = JSONObject().apply {
+        put("name", tool.name)
+        put("summary", tool.summary)
+        put("status", tool.status)
+        if (tool.detail != null) put("detail", tool.detail)
+        if (tool.extra.isNotEmpty()) {
+            put("extra", JSONObject().also { ex -> tool.extra.forEach { (k, v) -> ex.put(k, v) } })
+        }
     }
 }

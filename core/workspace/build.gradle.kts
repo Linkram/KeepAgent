@@ -22,4 +22,5 @@ dependencies {
     api(project(":core:storage"))
     api(project(":core:settings"))
     api(project(":core:events"))
+    testImplementation(kotlin("test"))
 }

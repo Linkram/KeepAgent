@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import io.keepagent.app.ui.KeepAgentShell
 import io.keepagent.app.ui.common.Pending
 import io.keepagent.app.ui.theme.KeepAgentTheme
+import io.keepagent.app.update.AppUpdatePrompt
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -16,6 +17,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             KeepAgentTheme {
                 KeepAgentShell()
+                AppUpdatePrompt()
             }
         }
     }

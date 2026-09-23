@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -35,8 +36,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 
 class KeepAgentApp : Application() {
+    private val backgroundClaims = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
 
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    val projectChecks by lazy { io.keepagent.app.test.ProjectChecks(this) }
+    val localRuntime by lazy { io.keepagent.app.runtime.LocalRuntimeAddon(this, workspaceManager) }
 
     lateinit var storage: Storage
         private set
@@ -58,6 +62,8 @@ class KeepAgentApp : Application() {
         private set
     lateinit var connections: ConnectionsStore
         private set
+    lateinit var runnerConnection: io.keepagent.app.runner.RunnerConnection
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -69,7 +75,7 @@ class KeepAgentApp : Application() {
         // device 2026-09-03: duplicated "plugin host ready" blocks on every
         // launch). The service is fully self-contained over AIDL, so the
         // helper process needs none of the app bootstrap.
-        if (currentProcessName().endsWith(":js")) return
+        if (currentProcessName().endsWith(":js") || currentProcessName().endsWith(":runtime")) return
         Holder.init(this)
 
         storage = Storage(this)
@@ -86,6 +92,7 @@ class KeepAgentApp : Application() {
             defaultHandler?.uncaughtException(thread, e)
         }
         settingsStore = SettingsStore(this)
+        runnerConnection = io.keepagent.app.runner.RunnerConnection(settingsStore)
         eventLog = EventLog(storage.eventsFile)
         eventBus = EventBus(eventLog)
         workspaceManager = WorkspaceManager(storage, settingsStore, eventBus)
@@ -105,6 +112,12 @@ class KeepAgentApp : Application() {
                 parseAllowlist(settingsStore.getString(SettingsStore.NS_GENERAL, "toolAllowlist"))
             },
         )
+        val approvalNotifier = ApprovalNotifier(this)
+        mainScope.launch {
+            approvalGate.pending.collectLatest { request ->
+                if (request == null) approvalNotifier.dismiss() else approvalNotifier.show(request)
+            }
+        }
         addonManager = AddonManager(
             context = this,
             addonsDir = storage.addonsDir,
@@ -140,6 +153,8 @@ class KeepAgentApp : Application() {
             tier1Addons = listOf(
                 ProviderOpenAiAddon(settingsStore, eventBus),
                 ToolsCoreAddon(fileService),
+                localRuntime,
+                io.keepagent.app.runner.RunnerAddon(runnerConnection),
             ),
         )
 
@@ -183,7 +198,7 @@ class KeepAgentApp : Application() {
     /** This process's name ("io.keepagent" or "io.keepagent:js"). */
     private fun currentProcessName(): String =
         if (Build.VERSION.SDK_INT >= 28) {
-            android.os.Process.myProcessName() ?: ""
+            getProcessName()
         } else {
             runCatching { File("/proc/self/cmdline").readText().trim('\u0000', ' ') }
                 .getOrDefault("")
@@ -213,8 +228,25 @@ class KeepAgentApp : Application() {
         try {
             val intent = Intent(this, AgentForegroundService::class.java)
             startForegroundService(intent)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            eventBus.emit(EventKind.ERROR, "background", "Android could not protect background work: ${e.javaClass.simpleName}. Keep the app open for this run.")
         }
+    }
+
+    fun beginBackgroundWork(id: String, cancel: () -> Unit) {
+        backgroundClaims[id] = cancel
+        ensureAgentForeground()
+    }
+
+    fun finishBackgroundWork(id: String) {
+        backgroundClaims.remove(id)
+        if (backgroundClaims.isEmpty()) stopAgentForeground()
+    }
+
+    fun hasBackgroundWork(): Boolean = backgroundClaims.isNotEmpty()
+
+    fun cancelBackgroundWork() {
+        backgroundClaims.values.toList().forEach { runCatching { it() } }
     }
 
     /** Called when the turn finishes (completed, canceled, or failed). */
@@ -238,14 +270,23 @@ class KeepAgentApp : Application() {
         val provider = addonManager.registryRef.provider("openai-compatible")
             ?: return null
         val modelId = currentModelId() ?: return null
+        val runnerTools = setOf("runner_info", "run", "job", "cancel_job", "remote_file", "browser_check", "desktop_check", "remote_addon", "android_check")
         val tools = addonManager.registryRef.tools().map { ToolSpec.from(it.tool) }
+            .filter { runnerConnection.configured() || it.name !in runnerTools }
+        val limit = connections.active()?.effectiveContextLimit ?: ApiConnection.DEFAULT_CONTEXT_LIMIT
+        val executor = io.keepagent.core.agent.DelegatingExecutor(
+            provider, modelId, tools, RegistryToolExecutor(addonManager), approvalGate, eventBus, limit,
+            "Workspace: ${workspaceManager.activeName()}. Read AGENTS.md and relevant nested instructions before inspecting code.",
+        )
         return AgentLoop(
             provider = provider,
             modelId = modelId,
-            tools = tools,
-            executor = RegistryToolExecutor(addonManager),
+            tools = tools + io.keepagent.core.agent.DelegatingExecutor.SPEC,
+            executor = executor,
             approval = approvalGate,
             eventBus = eventBus,
+            contextLimit = connections.active()?.effectiveContextLimit
+                ?: ApiConnection.DEFAULT_CONTEXT_LIMIT,
         )
     }
 

@@ -78,8 +78,13 @@ class FileService(
         return abs
     }
 
-    /** Reads a text file. Binary and very large files are rejected with a message. */
-    fun read(path: String, maxChars: Int = 64_000): Result {
+    /**
+     * Reads a text file. Binary and very large files are rejected with a
+     * message. [offset] (1-based first line) and [limit] (max lines) page
+     * large files (WS-1.3) — a paged read returns exactly the window plus a
+     * `[lines A–B of N]` note.
+     */
+    fun read(path: String, maxChars: Int = 64_000, offset: Int = 1, limit: Int? = null): Result {
         val f = resolve(path) ?: return Result.fail("outside workspace (file access = workspace)")
         if (!f.exists()) return Result.fail("no such file: $path")
         if (f.isDirectory) return Result.fail("is a directory: $path")
@@ -89,8 +94,21 @@ class FileService(
         val bytes = f.readBytes()
         if (bytes.contains(0.toByte())) return Result.fail("binary file, not text: $path")
         val text = bytes.decodeToString()
+        if (offset > 1 || (limit != null && limit > 0)) {
+            val lines = text.split("\n")
+            val first = offset.coerceAtLeast(1)
+            if (first > lines.size) {
+                return Result.fail("offset $offset beyond end of file (${lines.size} lines)")
+            }
+            val lastIdx = minOf(lines.size, first - 1 + (limit ?: lines.size))
+            val slice = lines.subList(first - 1, lastIdx).joinToString("\n")
+            val note = if (first > 1 || lastIdx < lines.size) {
+                "\n… [lines $first–$lastIdx of ${lines.size}]"
+            } else ""
+            return Result.ok(slice + note)
+        }
         return if (text.length > maxChars) {
-            Result.ok(text.take(maxChars) + "\n… [truncated at $maxChars chars — file has ${text.length}]")
+            Result.ok(text.take(maxChars) + "\n… [truncated at $maxChars chars — file has ${text.length} — page with offset/limit]")
         } else {
             Result.ok(text)
         }

@@ -52,7 +52,8 @@ data class ChatMessage(
 data class LlmModel(
     val id: String,
     val name: String,
-    val contextWindow: Int = 32_768,
+    /** Null when the provider's model-list response does not publish a limit. */
+    val contextWindow: Int? = null,
     val acceptsImages: Boolean = false,
     val supportsTools: Boolean = true,
     val supportsThinking: Boolean = false,
