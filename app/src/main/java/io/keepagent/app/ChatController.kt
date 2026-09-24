@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -201,6 +202,11 @@ class ChatController(private val app: KeepAgentApp) {
                 }
             }
             try {
+                if (app.workspaceManager.linkedUri(workspaceName) != null) {
+                    runCatching { app.linkedProjectSync.sync(workspaceName) }
+                        .onFailure { app.eventBus.emit(io.keepagent.core.events.EventKind.ERROR,
+                            "projects", "Could not refresh linked folder: ${it.message}") }
+                }
                 agent.runTurn(
                     turn.run,
                     prompt,
@@ -215,6 +221,13 @@ class ChatController(private val app: KeepAgentApp) {
             } catch (e: CancellationException) {
                 // stop() — run is already CANCELED; fall through to save.
             } finally {
+                if (app.workspaceManager.linkedUri(workspaceName) != null) {
+                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                        runCatching { app.linkedProjectSync.sync(workspaceName) }
+                            .onFailure { app.eventBus.emit(io.keepagent.core.events.EventKind.ERROR,
+                                "projects", "Could not save linked folder changes: ${it.message}") }
+                    }
+                }
                 ticker.cancel()
                 saveTicker.cancel()
                 memorySummary = turn.run.messages.value.lastOrNull {

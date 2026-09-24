@@ -33,6 +33,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -67,6 +69,7 @@ import io.keepagent.app.Holder
 import io.keepagent.app.R
 import io.keepagent.app.ui.tabs.AddonsTab
 import io.keepagent.app.ui.tabs.ChatTab
+import io.keepagent.app.ui.tabs.ModelChip
 import io.keepagent.app.ui.tabs.HistorySidebar
 import io.keepagent.app.ui.tabs.ConnectionsTab
 import io.keepagent.app.ui.tabs.ConsoleTab
@@ -152,6 +155,7 @@ fun KeepAgentShell() {
                 projectName = activeProject,
                 onHistory = { showChatHistory = true },
                 onProject = { projectChooserRequest++; selected = 2 },
+                onProjectChanged = { activeProject = it },
             )
             HorizontalDivider(color = BevelLight, thickness = 1.dp)
         }
@@ -418,7 +422,13 @@ private val PRIMARY_DESTINATIONS = listOf(
 
 @Composable
 private fun ProductHeader(selected: Int, running: Boolean, projectName: String,
-    onHistory: () -> Unit, onProject: () -> Unit) {
+    onHistory: () -> Unit, onProject: () -> Unit, onProjectChanged: (String) -> Unit) {
+    val app = Holder.app
+    var projectMenu by remember { mutableStateOf(false) }
+    val models by app.chatController.models.collectAsState()
+    val modelsError by app.chatController.modelsError.collectAsState()
+    val activeConnection by app.connections.activeConnection.collectAsState()
+    val modelId = activeConnection?.model?.takeIf { it.isNotBlank() } ?: app.currentModelId()
     Row(
         modifier = Modifier.fillMaxWidth().background(BarStone).padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -430,18 +440,50 @@ private fun ProductHeader(selected: Int, running: Boolean, projectName: String,
             }
         }
         Column(Modifier.weight(1f)) {
-            Text("KeepAgent", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-            Text(if (running) "Agent working" else "Ready to work", fontSize = 11.sp,
-                color = if (running) AmberStatus else TextSecondary)
+            Text(if (selected == 0) "Keep" else "KeepAgent", fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold, color = TextPrimary, maxLines = 1)
+            if (selected != 0) Text(if (running) "Agent working" else "Ready to work",
+                fontSize = 11.sp, color = if (running) AmberStatus else TextSecondary)
         }
-        Text(
-            text = projectName.ifBlank { "Choose project" } + "  ▾",
-            maxLines = 1,
-            fontSize = 12.sp,
-            color = TextPrimary,
-            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(TileStone)
-                .clickable(onClick = onProject).padding(horizontal = 10.dp, vertical = 10.dp),
-        )
+        if (selected == 0) {
+            Box {
+                Text(
+                    text = projectName.take(12).ifBlank { "Project" } + " ▾",
+                    maxLines = 1, fontSize = 11.sp, color = TextPrimary,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(TileStone)
+                        .clickable { projectMenu = true }
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                )
+                DropdownMenu(expanded = projectMenu, onDismissRequest = { projectMenu = false }) {
+                    app.workspaceManager.recentNames().take(8).forEach { name ->
+                        DropdownMenuItem(
+                            text = { Text((if (name == projectName) "✓ " else "") +
+                                name, fontSize = 13.sp) },
+                            enabled = !running,
+                            onClick = {
+                                projectMenu = false
+                                if (app.workspaceManager.setActive(name)) {
+                                    app.workspaceChanged()
+                                    onProjectChanged(name)
+                                }
+                            },
+                        )
+                    }
+                    DropdownMenuItem(text = { Text("Manage projects…", fontSize = 13.sp) },
+                        onClick = { projectMenu = false; onProject() })
+                }
+            }
+            ModelChip(modelId ?: "Model", models, modelId, modelsError,
+                app.chatController::selectModel,
+                { app.chatController.refreshModels(force = true) })
+        } else {
+            Text(
+                text = projectName.ifBlank { "Choose project" } + "  ▾",
+                maxLines = 1, fontSize = 12.sp, color = TextPrimary,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(TileStone)
+                    .clickable(onClick = onProject).padding(horizontal = 10.dp, vertical = 10.dp),
+            )
+        }
     }
 }
 

@@ -14,6 +14,7 @@ data class WorkspaceInfo(
     val lastModifiedMillis: Long,
     val fileCount: Int,
     val sizeBytes: Long,
+    val linkedUri: String? = null,
 )
 
 /**
@@ -52,6 +53,7 @@ class WorkspaceManager(
                 lastModifiedMillis = files.maxOfOrNull { it.lastModified() } ?: dir.lastModified(),
                 fileCount = files.size,
                 sizeBytes = files.sumOf { it.length() },
+                linkedUri = linkedUri(dir.name),
             )
         }.sortedBy { it.name }
     }
@@ -66,6 +68,25 @@ class WorkspaceManager(
         return sanitized
     }
 
+    /** A linked project keeps a local working copy and a persisted Android folder grant. */
+    fun link(name: String, uri: String): String? {
+        val created = create(name) ?: return null
+        settings.setString(SettingsStore.NS_SESSIONS, "linkedUri:$created", uri)
+        return created
+    }
+
+    fun linkedUri(name: String): String? =
+        settings.getString(SettingsStore.NS_SESSIONS, "linkedUri:$name")?.takeIf { it.isNotBlank() }
+
+    fun recentNames(): List<String> =
+        (root.listFiles()?.filter { it.isDirectory } ?: emptyList()).sortedWith(
+            compareByDescending<File> {
+                if (it.name == activeName()) Long.MAX_VALUE
+                else settings.getString(SettingsStore.NS_SESSIONS, "activated:${it.name}")
+                    ?.toLongOrNull() ?: it.lastModified()
+            },
+        ).map { it.name }
+
     /** Renames a workspace (and its persisted active pointer). Returns the new name, or null. */
     fun rename(oldName: String, newName: String): String? {
         val sanitized = sanitize(newName)
@@ -79,6 +100,14 @@ class WorkspaceManager(
             settings.setString(SettingsStore.NS_SESSIONS, ACTIVE_KEY, sanitized)
             eventBus.emit(EventKind.SYSTEM, "workspaces", "active workspace renamed -> $sanitized")
         }
+        linkedUri(oldName)?.let {
+            settings.setString(SettingsStore.NS_SESSIONS, "linkedUri:$sanitized", it)
+            settings.setString(SettingsStore.NS_SESSIONS, "linkedUri:$oldName", "")
+        }
+        settings.getString(SettingsStore.NS_SESSIONS, "activated:$oldName")?.let {
+            settings.setString(SettingsStore.NS_SESSIONS, "activated:$sanitized", it)
+            settings.setString(SettingsStore.NS_SESSIONS, "activated:$oldName", "")
+        }
         eventBus.emit(EventKind.SYSTEM, "workspaces", "renamed workspace '$oldName' -> '$sanitized'")
         return sanitized
     }
@@ -89,6 +118,7 @@ class WorkspaceManager(
         val dir = File(root, name)
         if (!dir.exists() || dir.parentFile != root) return false
         val ok = dir.deleteRecursively()
+        if (ok) settings.setString(SettingsStore.NS_SESSIONS, "linkedUri:$name", "")
         if (ok) eventBus.emit(EventKind.SYSTEM, "workspaces", "deleted workspace '$name'")
         return ok
     }
@@ -99,6 +129,7 @@ class WorkspaceManager(
         val dir = File(root, name)
         if (!dir.isDirectory) return false
         settings.setString(SettingsStore.NS_SESSIONS, ACTIVE_KEY, name)
+        settings.setString(SettingsStore.NS_SESSIONS, "activated:$name", System.currentTimeMillis().toString())
         eventBus.emit(EventKind.SYSTEM, "workspaces", "active workspace -> $name")
         return true
     }

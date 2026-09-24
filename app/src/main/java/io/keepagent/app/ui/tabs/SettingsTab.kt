@@ -32,6 +32,11 @@ import androidx.compose.ui.unit.dp
 import io.keepagent.app.Holder
 import io.keepagent.app.phoneui.PhoneUiAccessCard
 import io.keepagent.app.ui.theme.TextSecondary
+import io.keepagent.app.ui.theme.ThemeState
+import io.keepagent.app.ui.theme.TileStone
+import io.keepagent.app.ui.theme.UserBubble
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
 import io.keepagent.app.update.AppUpdateControl
 import io.keepagent.core.agent.ApprovalMode
 import io.keepagent.core.settings.FileAccess
@@ -65,6 +70,35 @@ fun SettingsTab(onNavigate: (Int) -> Unit, onDocs: () -> Unit) {
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         Text("Set up the agent, manage access, and keep the app current.", color = TextSecondary)
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Appearance", style = MaterialTheme.typography.titleLarge)
+                Text("Choose a palette. Tap Surprise me again for a new one.", color = TextSecondary,
+                    style = MaterialTheme.typography.bodySmall)
+                ThemeState.choices.forEach { (id, label) ->
+                    val active = ThemeState.selected == id
+                    val preview = ThemeState.preview(id)
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                            .background(if (active) MaterialTheme.colorScheme.primaryContainer else TileStone)
+                            .clickable { ThemeState.choose(id, app.settingsStore) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            listOf(preview.wall, preview.bar, preview.user).forEach { color ->
+                                Box(Modifier.size(14.dp).clip(RoundedCornerShape(4.dp)).background(color))
+                            }
+                        }
+                        Text(label, modifier = Modifier.weight(1f))
+                        if (active) Text(if (id == ThemeState.RANDOM) "Reroll ↻" else "Selected",
+                            color = TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

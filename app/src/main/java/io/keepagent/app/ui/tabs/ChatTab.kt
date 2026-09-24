@@ -138,8 +138,6 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
     val app = Holder.app
     val controller = app.chatController
     val turns by controller.turns.collectAsState()
-    val models by controller.models.collectAsState()
-    val modelsError by controller.modelsError.collectAsState()
     val pendingApproval by app.approvalGate.pending.collectAsState()
     val isRunning by controller.isRunning.collectAsState()
     val sendOnEnter = remember {
@@ -218,15 +216,7 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-        ChatHeader(
-            sessionTitle = sessionTitle,
-            modelLabel = modelId ?: "Choose model",
-            models = models,
-            currentModel = modelId,
-            modelsError = modelsError,
-            onModelSelected = controller::selectModel,
-            onRetryModels = { controller.refreshModels(force = true) },
-        )
+        ChatHeader(sessionTitle = sessionTitle)
         HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f), thickness = 1.dp)
 
         Box(
@@ -460,12 +450,6 @@ private fun ChatFastScroller(state: LazyListState, modifier: Modifier = Modifier
 @Composable
 private fun ChatHeader(
     sessionTitle: String,
-    modelLabel: String,
-    models: List<io.keepagent.addonsapi.llm.LlmModel>,
-    currentModel: String?,
-    modelsError: String?,
-    onModelSelected: (String) -> Unit,
-    onRetryModels: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -481,12 +465,11 @@ private fun ChatHeader(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        ModelChip(modelLabel, models, currentModel, modelsError, onModelSelected, onRetryModels)
     }
 }
 
 @Composable
-private fun ModelChip(
+fun ModelChip(
     modelLabel: String,
     models: List<io.keepagent.addonsapi.llm.LlmModel>,
     currentModel: String?,
@@ -499,7 +482,7 @@ private fun ModelChip(
     var typed by remember { mutableStateOf("") }
     Box {
         Chip(
-            text = "Model: $modelLabel  ▾",
+            text = "$modelLabel  ▾",
             onClick = {
                 typing = false
                 typed = currentModel ?: ""
@@ -587,7 +570,7 @@ private fun ModelChip(
 private fun Chip(text: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .widthIn(max = 175.dp)
+            .widthIn(max = 130.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(TileStone)
             .clickable(onClick = onClick)
@@ -768,7 +751,7 @@ private fun UserBubble(
                     }
                     }
                 }
-                BubbleTail(color = UserBubble, tailEnd = true, modifier = Modifier.padding(start = 14.dp))
+                BubbleTail(color = UserBubble, tailEnd = true)
             }
         }
         if (actionsOpen) {
@@ -1043,7 +1026,7 @@ private fun AgentBubble(
                 }
             }
         }
-        BubbleTail(color = AgentBubble, tailEnd = false, modifier = Modifier.padding(end = 14.dp))
+        BubbleTail(color = AgentBubble, tailEnd = false)
         if (actionsOpen && !streaming) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1112,16 +1095,16 @@ private fun ThinkingActivityView(content: String) {
 /** Speech tail under a chat bubble (mockup): small slanted triangle. */
 @Composable
 private fun BubbleTail(color: Color, tailEnd: Boolean, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier.size(width = 22.dp, height = 10.dp)) {
+    Canvas(modifier = modifier.size(width = 28.dp, height = 10.dp)) {
         val path = Path().apply {
             if (tailEnd) {
-                moveTo(size.width - 18f, 0f)
-                lineTo(size.width, 0f)
-                lineTo(size.width - 4f, size.height)
-            } else {
                 moveTo(0f, 0f)
-                lineTo(18f, 0f)
-                lineTo(4f, size.height)
+                lineTo(size.width - 12.dp.toPx(), 0f)
+                lineTo(size.width, size.height)
+            } else {
+                moveTo(12.dp.toPx(), 0f)
+                lineTo(size.width, 0f)
+                lineTo(0f, size.height)
             }
             close()
         }

@@ -52,6 +52,7 @@ class KeepAgentApp : Application() {
         private set
     lateinit var workspaceManager: WorkspaceManager
         private set
+    val linkedProjectSync by lazy { LinkedProjectSync(this, workspaceManager) }
     lateinit var fileService: FileService
         private set
     lateinit var approvalGate: ApprovalGate
@@ -92,6 +93,7 @@ class KeepAgentApp : Application() {
             defaultHandler?.uncaughtException(thread, e)
         }
         settingsStore = SettingsStore(this)
+        io.keepagent.app.ui.theme.ThemeState.load(settingsStore)
         runnerConnection = io.keepagent.app.runner.RunnerConnection(settingsStore)
         eventLog = EventLog(storage.eventsFile)
         eventBus = EventBus(eventLog)
@@ -196,6 +198,12 @@ class KeepAgentApp : Application() {
         val root = workspaceManager.activeRoot().absolutePath
         fileService.setRoot(workspaceManager.activeRoot())
         addonManager.workspaceChanged(root)
+        val name = workspaceManager.activeName()
+        if (workspaceManager.linkedUri(name) != null) mainScope.launch(Dispatchers.IO) {
+            runCatching { linkedProjectSync.sync(name) }
+                .onSuccess { eventBus.emit(EventKind.SYSTEM, "projects", it) }
+                .onFailure { eventBus.emit(EventKind.ERROR, "projects", "Folder sync failed: ${it.message}") }
+        }
         eventBus.emit(EventKind.SYSTEM, "app", "workspace switched → ${workspaceManager.activeName()}")
     }
 

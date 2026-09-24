@@ -21,6 +21,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -41,6 +44,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,6 +103,38 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
     val context = androidx.compose.ui.platform.LocalContext.current
     var importing by remember { mutableStateOf(false) }
     var cloning by remember { mutableStateOf(false) }
+    val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                var createdName: String? = null
+                val result = runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    val suggested = android.provider.DocumentsContract.getTreeDocumentId(uri)
+                        .substringAfterLast(':').substringAfterLast('/')
+                    val projectName = name.ifBlank { suggested.ifBlank { "Phone folder" } }
+                    val linked = app.workspaceManager.link(projectName, uri.toString())
+                        ?: error("Choose a different project name.")
+                    createdName = linked
+                    withContext(Dispatchers.IO) { app.linkedProjectSync.sync(linked) }
+                    linked
+                }
+                result.onSuccess { linked ->
+                    app.workspaceManager.setActive(linked)
+                    app.workspaceChanged()
+                    onProjectChanged(linked)
+                    name = ""
+                    showProjectActions = false
+                    openWs = linked
+                    message = "Linked folder: $linked"
+                    list = withContext(Dispatchers.IO) { app.workspaceManager.list() }
+                }.onFailure {
+                    createdName?.let { created -> app.workspaceManager.delete(created) }
+                    message = "Could not link folder: ${it.message}"
+                }
+            }
+        }
+    }
     val importZip = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             importing = true
@@ -150,8 +186,7 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
         if (chooserRequest > 0) openWs = null
     }
 
-    // Tapping a workspace makes it active (file tools re-point to its root)
-    // and opens the file browser for it.
+    // Opening a project never changes the agent's active project.
     val open = openWs
     BackHandler(enabled = open != null) { openWs = null }
     if (open != null) {
@@ -195,10 +230,10 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
         }
         if (showProjectActions) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp),
+            modifier = Modifier.padding(horizontal = 12.dp).horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            listOf("new" to "New", "git" to "Clone Git", "zip" to "Import ZIP").forEach { (id, label) ->
+            listOf("new" to "New", "folder" to "Phone folder", "git" to "Clone Git", "zip" to "Import ZIP").forEach { (id, label) ->
                 FilterChip(selected = projectActionMode == id,
                     onClick = { projectActionMode = id }, label = { Text(label) })
             }
@@ -295,10 +330,18 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
             modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().heightIn(min = 48.dp),
         ) { Text(if (importing) "Importing project…" else "Import ZIP as new project") }
         }
+        if (projectActionMode == "folder") {
+            OutlinedButton(
+                onClick = { pickFolder.launch(null) },
+                enabled = !importing && !cloning,
+                modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().heightIn(min = 48.dp),
+            ) { Text("Choose an existing folder") }
+        }
         Text(
             when (projectActionMode) {
                 "git" -> "Use a public HTTP(S) Git URL. Git history is preserved."
                 "zip" -> "Choose a ZIP file from your device. The project will be stored in KeepAgent."
+                "folder" -> "Android will ask which folder KeepAgent may read and edit. Some protected folders cannot be chosen."
                 else -> "Create an empty project and add files in the explorer."
             },
             fontSize = 12.sp, color = TextSecondary,
@@ -343,14 +386,14 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
                 WorkspaceRow(
                     info = ws,
                     active = ws.name == active,
-                    onSelect = {
+                    onOpen = { openWs = ws.name },
+                    onActivate = {
                         if (ws.name != active) {
                             app.workspaceManager.setActive(ws.name)
                             app.workspaceChanged()
                             onProjectChanged(ws.name)
                             scope.launch { refresh() }
                         }
-                        openWs = ws.name
                     },
                     onDelete = { deleteTarget = ws },
                     onRename = {
@@ -367,16 +410,31 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
             title = { Text("Delete workspace?", fontSize = 14.sp) },
             text = {
                 Text(
-                    text = "This permanently removes '${ws.name}' and its ${ws.fileCount} files. This cannot be undone.",
+                    text = if (ws.linkedUri != null)
+                        "Remove '${ws.name}' and its local working copy? The original phone folder stays untouched."
+                    else "This permanently removes '${ws.name}' and its ${ws.fileCount} files. This cannot be undone.",
                     fontSize = 12.sp,
                 )
             },
             confirmButton = {
                 Button(onClick = {
-                    app.workspaceManager.delete(ws.name)
-                    message = "deleted: ${ws.name}"
                     deleteTarget = null
-                    scope.launch { refresh() }
+                    scope.launch {
+                        val removed = withContext(Dispatchers.IO) {
+                            val ok = app.workspaceManager.delete(ws.name)
+                            if (ok && ws.linkedUri != null &&
+                                app.workspaceManager.list().none { it.linkedUri == ws.linkedUri }) {
+                                runCatching {
+                                    context.contentResolver.releasePersistableUriPermission(
+                                        android.net.Uri.parse(ws.linkedUri),
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                                }
+                            }
+                            ok
+                        }
+                        message = if (removed) "removed: ${ws.name}" else "could not remove ${ws.name}"
+                        refresh()
+                    }
                 }) {
                     Text("Delete")
                 }
@@ -412,7 +470,7 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
                     message = if (new != null) "renamed to: $new" else "name unavailable"
                     renameTarget = null
                     if (new != null) {
-                        app.fileService.setRoot(app.workspaceManager.activeRoot())
+                        if (app.workspaceManager.activeName() == new) app.workspaceChanged()
                         onProjectChanged(app.workspaceManager.activeName())
                         openWs = new
                     }
@@ -432,15 +490,16 @@ fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = 
 private fun WorkspaceRow(
     info: WorkspaceInfo,
     active: Boolean,
-    onSelect: () -> Unit,
+    onOpen: () -> Unit,
+    onActivate: () -> Unit,
     onDelete: () -> Unit,
     onRename: () -> Unit,
 ) {
     val shape = RoundedCornerShape(8.dp)
-    Row(
+    var moreOpen by remember { mutableStateOf(false) }
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 64.dp)
             .clip(shape)
             .background(if (active) TileStoneSelected else TileStone)
             .border(
@@ -448,34 +507,40 @@ private fun WorkspaceRow(
                 color = if (active) BevelLight else androidx.compose.ui.graphics.Color.Transparent,
                 shape = shape,
             )
-            .clickable(onClick = onSelect)
             .padding(horizontal = 11.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = info.name,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary,
-                )
-                if (active) {
-                    Text("  active", fontSize = 10.sp, color = AmberStatus)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (info.linkedUri != null) "📁" else "▣", fontSize = 22.sp,
+                modifier = Modifier.padding(end = 8.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(info.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                        color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (active) Text("  active", fontSize = 10.sp, color = AmberStatus)
+                }
+                Text((if (info.linkedUri != null) "Phone folder · " else "") +
+                    "${info.fileCount} files · ${formatSize(info.sizeBytes)}",
+                    fontSize = 10.sp, color = TextSecondary)
+            }
+            TextButton(onClick = onOpen) { Text("Open ›") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.End,
+            modifier = Modifier.fillMaxWidth()) {
+            if (!active) TextButton(onClick = onActivate) { Text("Set active") }
+            androidx.compose.foundation.layout.Box {
+                TextButton(onClick = { moreOpen = true }) { Text("More ···", color = TextSecondary) }
+                androidx.compose.material3.DropdownMenu(
+                    expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("Rename") },
+                        onClick = { moreOpen = false; onRename() })
+                    if (!active) androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(if (info.linkedUri != null) "Remove link" else "Delete project") },
+                        onClick = { moreOpen = false; onDelete() })
                 }
             }
-            Text(
-                text = "${info.fileCount} files · ${formatSize(info.sizeBytes)}",
-                fontSize = 10.sp,
-                color = TextSecondary,
-            )
         }
-        TextButton(onClick = onRename) { Text("Rename") }
-        if (!active) {
-            TextButton(onClick = onDelete) { Text("Delete", color = AmberStatus) }
-        }
-        Text("›", fontSize = 20.sp, color = TextPrimary)
     }
 }
 
@@ -500,13 +565,20 @@ private fun WorkspaceExplorer(
     onBack: () -> Unit,
 ) {
     val app = Holder.app
-    val fs = app.fileService
+    val fs = remember(wsName) {
+        FileService(app.workspaceManager.rootFor(wsName) ?: app.workspaceManager.activeRoot(),
+            app.eventBus, FileAccess.WORKSPACE)
+    }
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     val git = remember { GitService() }
 
     var dir by remember { mutableStateOf("") }
     var openFile by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = openFile != null || dir.isNotEmpty()) {
+        if (openFile != null) openFile = null
+        else dir = dir.substringBeforeLast('/', "")
+    }
     var entries by remember { mutableStateOf<List<FileService.DirEntry>?>(null) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -515,6 +587,10 @@ private fun WorkspaceExplorer(
     var query by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf("name") } // name | size | date
     var sortMenuOpen by remember { mutableStateOf(false) }
+    var gridView by rememberSaveable {
+        mutableStateOf(app.settingsStore.getString(
+            io.keepagent.core.settings.SettingsStore.NS_GENERAL, "projectGridView") == "true")
+    }
     var newName by remember { mutableStateOf("") }
     var createOpen by remember { mutableStateOf(false) }
 
@@ -637,6 +713,14 @@ private fun WorkspaceExplorer(
     }
 
     LaunchedEffect(dir) { loadDir() }
+    LaunchedEffect(wsName) {
+        if (app.workspaceManager.linkedUri(wsName) != null) {
+            notice = "Syncing phone folder…"
+            runCatching { withContext(Dispatchers.IO) { app.linkedProjectSync.sync(wsName) } }
+                .onSuccess { notice = it; loadDir() }
+                .onFailure { notice = "Folder sync failed: ${it.message}" }
+        }
+    }
 
     // Focus the file/folder the Chat tab handed over.
     LaunchedEffect(Unit) {
@@ -682,14 +766,14 @@ private fun WorkspaceExplorer(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val parts = dir.split("/").filter { it.isNotEmpty() }
-                if (parts.isEmpty()) {
-                    Text(
-                        text = "Project root",
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = TextSecondary,
-                    )
-                } else {
+                Text(
+                    text = "⌂",
+                    fontSize = 16.sp,
+                    color = if (parts.isEmpty()) TextPrimary else TextSecondary,
+                    modifier = Modifier.clickable { dir = ""; openFile = null }
+                        .padding(horizontal = 5.dp),
+                )
+                if (parts.isNotEmpty()) {
                     parts.forEachIndexed { i, part ->
                         Text(
                             text = "/$part",
@@ -932,9 +1016,16 @@ private fun WorkspaceExplorer(
         if (file != null) {
             Recents.add(file)
             FileEditor(
+                fs = fs,
                 relPath = file,
                 onBack = { openFile = null },
-                onSaved = { loadDir() },
+                onSaved = {
+                    loadDir()
+                    if (app.workspaceManager.linkedUri(wsName) != null) scope.launch(Dispatchers.IO) {
+                        runCatching { app.linkedProjectSync.sync(wsName) }
+                            .onFailure { withContext(Dispatchers.Main) { notice = "Folder sync failed: ${it.message}" } }
+                    }
+                },
             )
         } else {
             // Search + sort row (M1.4h).
@@ -974,6 +1065,24 @@ private fun WorkspaceExplorer(
                 }
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("View", color = TextSecondary, fontSize = 12.sp)
+                FilterChip(selected = !gridView, onClick = {
+                    gridView = false
+                    app.settingsStore.setString(io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                        "projectGridView", "false")
+                }, label = { Text("☰  Folder list") })
+                FilterChip(selected = gridView, onClick = {
+                    gridView = true
+                    app.settingsStore.setString(io.keepagent.core.settings.SettingsStore.NS_GENERAL,
+                        "projectGridView", "true")
+                }, label = { Text("▦  File grid") })
+            }
+
             // Create file/folder row (M1.4h fix — empty workspaces had no way in).
             fun createEntry(isDir: Boolean) {
                 val n = newName.trim()
@@ -988,6 +1097,12 @@ private fun WorkspaceExplorer(
                 val rel = if (dir.isEmpty()) n else "$dir/$n"
                 scope.launch(Dispatchers.IO) {
                     val r = if (isDir) fs.createDir(rel) else fs.createFile(rel, "")
+                    if (r.ok && app.workspaceManager.linkedUri(wsName) != null) {
+                        runCatching { app.linkedProjectSync.sync(wsName) }
+                            .onFailure { withContext(Dispatchers.Main) {
+                                notice = "Created locally, but folder sync failed: ${it.message}"
+                            } }
+                    }
                     withContext(Dispatchers.Main) {
                         notice = if (r.ok) r.text else r.error
                         if (r.ok) {
@@ -1080,6 +1195,27 @@ private fun WorkspaceExplorer(
                     else -> filtered
                 }
             }
+            fun openEntry(entry: FileService.DirEntry) {
+                if (entry.isDirectory) {
+                    dir = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
+                    openFile = null
+                } else {
+                    openFile = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
+                }
+            }
+            if (gridView && !shown.isNullOrEmpty()) {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 104.dp),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    gridItems(shown!!, key = { it.name }) { entry ->
+                        ExplorerTile(entry, onOpen = { openEntry(entry) })
+                    }
+                }
+            } else {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1108,14 +1244,8 @@ private fun WorkspaceExplorer(
                     else -> items(list, key = { it.name }) { entry ->
                         ExplorerRow(
                             entry = entry,
-                            onOpen = {
-                                if (entry.isDirectory) {
-                                    dir = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
-                                    openFile = null
-                                } else {
-                                    openFile = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
-                                }
-                            },
+                            path = dir,
+                            onOpen = { openEntry(entry) },
                             onAttach = {
                                 val rel = if (dir.isEmpty()) entry.name else "$dir/${entry.name}"
                                 app.chatController.attachFile(
@@ -1127,6 +1257,7 @@ private fun WorkspaceExplorer(
                     }
                 }
             }
+            }
         }
     }
 }
@@ -1134,6 +1265,7 @@ private fun WorkspaceExplorer(
 @Composable
 private fun ExplorerRow(
     entry: FileService.DirEntry,
+    path: String,
     onOpen: () -> Unit,
     onAttach: () -> Unit = {},
 ) {
@@ -1148,14 +1280,17 @@ private fun ExplorerRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            text = if (entry.isDirectory) entry.name + "/" else entry.name,
-            fontSize = 14.sp,
-            fontFamily = FontFamily.Monospace,
-            color = TextPrimary,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-        )
+        Text(if (entry.isDirectory) "📁" else "📄", fontSize = 25.sp)
+        Column(Modifier.weight(1f)) {
+            Text(entry.name, fontSize = 14.sp, color = TextPrimary, maxLines = 1,
+                overflow = TextOverflow.Ellipsis)
+            Text(
+                text = (if (path.isEmpty()) "Project root" else path) +
+                    " · " + (if (entry.isDirectory) "Folder" else formatSize(entry.sizeBytes)),
+                fontSize = 10.sp, color = TextSecondary, maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         if (!entry.isDirectory) {
             Text(
                 text = formatSize(entry.sizeBytes),
@@ -1169,11 +1304,26 @@ private fun ExplorerRow(
     }
 }
 
+@Composable
+private fun ExplorerTile(entry: FileService.DirEntry, onOpen: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().heightIn(min = 112.dp)
+            .clip(RoundedCornerShape(12.dp)).background(TileStone)
+            .clickable(onClick = onOpen).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Text(if (entry.isDirectory) "📁" else "📄", fontSize = 32.sp)
+        Text(entry.name, fontSize = 12.sp, color = TextPrimary, maxLines = 2,
+            overflow = TextOverflow.Ellipsis)
+        Text(if (entry.isDirectory) "Folder" else formatSize(entry.sizeBytes),
+            fontSize = 10.sp, color = TextSecondary)
+    }
+}
+
 /** Text viewer/editor for one workspace file. */
 @Composable
-private fun FileEditor(relPath: String, onBack: () -> Unit, onSaved: () -> Unit) {
+private fun FileEditor(fs: FileService, relPath: String, onBack: () -> Unit, onSaved: () -> Unit) {
     val app = Holder.app
-    val fs = app.fileService
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
 
