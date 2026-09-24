@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.core.content.FileProvider
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -79,7 +80,7 @@ import java.util.zip.ZipOutputStream
  * Switching re-points the file service's root (ADR-0002).
  */
 @Composable
-fun WorkspacesTab() {
+fun WorkspacesTab(chooserRequest: Int = 0, onProjectChanged: (String) -> Unit = {}) {
     val app = Holder.app
     var list by remember { mutableStateOf<List<WorkspaceInfo>>(emptyList()) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -91,6 +92,8 @@ fun WorkspacesTab() {
     var deleteTarget by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var renameTarget by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var renameName by remember { mutableStateOf("") }
+    var showProjectActions by remember { mutableStateOf(false) }
+    var projectActionMode by remember { mutableStateOf("new") }
 
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -108,8 +111,9 @@ fun WorkspacesTab() {
                         stream.use { app.workspaceManager.importZip(it, projectName) }
                     }
                     list = withContext(Dispatchers.IO) { app.workspaceManager.list() }
-                    message = "Imported ${result.name}: ${result.files} files. Tap the project to continue."
+                    message = "Imported ${result.name}: ${result.files} files."
                     name = ""
+                    showProjectActions = false
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -142,6 +146,9 @@ fun WorkspacesTab() {
         refresh()
         if (pendingFile != null) openWs = active
     }
+    LaunchedEffect(chooserRequest) {
+        if (chooserRequest > 0) openWs = null
+    }
 
     // Tapping a workspace makes it active (file tools re-point to its root)
     // and opens the file browser for it.
@@ -165,12 +172,12 @@ fun WorkspacesTab() {
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Switch project", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                    Text("Choose which codebase the agent and file tools use", fontSize = 10.sp, color = TextSecondary)
+                    Text("Projects", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Text("Choose the project the agent works in", fontSize = 12.sp, color = TextSecondary)
                 }
                 Text(
-                    text = "${list.size} projects · ${fileAccess.name.lowercase()} access",
-                    fontSize = 9.sp,
+                    text = "${list.size} projects",
+                    fontSize = 11.sp,
                     color = TextSecondary,
                     modifier = Modifier
                         .clip(RoundedCornerShape(5.dp))
@@ -179,7 +186,21 @@ fun WorkspacesTab() {
                 )
             }
             active?.let {
-                Text("Agent workspace: $it", fontSize = 10.sp, color = AmberStatus)
+                Text("Active: $it · ${if (fileAccess == FileAccess.WORKSPACE) "project-only files" else "all device files"}",
+                    fontSize = 12.sp, color = AmberStatus)
+            }
+            OutlinedButton(onClick = { showProjectActions = !showProjectActions }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (showProjectActions) "Hide project actions" else "Create or import a project")
+            }
+        }
+        if (showProjectActions) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf("new" to "New", "git" to "Clone Git", "zip" to "Import ZIP").forEach { (id, label) ->
+                FilterChip(selected = projectActionMode == id,
+                    onClick = { projectActionMode = id }, label = { Text(label) })
             }
         }
         Row(
@@ -192,7 +213,7 @@ fun WorkspacesTab() {
             TextField(
                 value = name,
                 onValueChange = { name = it },
-                placeholder = { Text("New project name", fontSize = 13.sp) },
+                placeholder = { Text("Project name", fontSize = 13.sp) },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 colors = androidx.compose.material3.TextFieldDefaults.colors(
@@ -202,23 +223,26 @@ fun WorkspacesTab() {
                     unfocusedIndicatorColor = BevelLight,
                 ),
             )
-            Button(
+            if (projectActionMode == "new") Button(
                 enabled = name.isNotBlank() && !importing && !cloning,
                 onClick = {
                 val created = app.workspaceManager.create(name)
                 message = if (created != null) {
                     app.workspaceManager.setActive(created)
                     app.workspaceChanged()
+                    onProjectChanged(created)
                     openWs = created
                     "created: $created"
                 } else {
                     "name unavailable or already exists"
                 }
                 name = ""
+                if (created != null) showProjectActions = false
                 scope.launch { refresh() }
                 },
             ) { Text("+ Create") }
         }
+        if (projectActionMode == "git") {
         TextField(
             value = cloneUrl,
             onValueChange = { cloneUrl = it },
@@ -245,10 +269,12 @@ fun WorkspacesTab() {
                         list = withContext(Dispatchers.IO) { app.workspaceManager.list() }
                         app.workspaceManager.setActive(result.name)
                         app.workspaceChanged()
+                        onProjectChanged(result.name)
                         openWs = result.name
                         message = "Cloned ${result.name}: ${result.files} files."
                         name = ""
                         cloneUrl = ""
+                        showProjectActions = false
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -260,17 +286,25 @@ fun WorkspacesTab() {
             },
             enabled = name.isNotBlank() && cloneUrl.isNotBlank() && !importing && !cloning,
             modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().heightIn(min = 48.dp),
-        ) { Text(if (cloning) "Cloning repository…" else "Clone public Git repository") }
+        ) { Text(if (cloning) "Cloning repository…" else "Clone repository") }
+        }
+        if (projectActionMode == "zip") {
         OutlinedButton(
             onClick = { importZip.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
             enabled = name.isNotBlank() && !importing && !cloning,
             modifier = Modifier.padding(horizontal = 12.dp).fillMaxWidth().heightIn(min = 48.dp),
         ) { Text(if (importing) "Importing project…" else "Import ZIP as new project") }
+        }
         Text(
-            "Use a public HTTP(S) Git URL or choose a ZIP. Included Git history is preserved; desktop chat history is not imported.",
+            when (projectActionMode) {
+                "git" -> "Use a public HTTP(S) Git URL. Git history is preserved."
+                "zip" -> "Choose a ZIP file from your device. The project will be stored in KeepAgent."
+                else -> "Create an empty project and add files in the explorer."
+            },
             fontSize = 12.sp, color = TextSecondary,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
         )
+        }
         message?.let { msg ->
             Text(
                 text = msg,
@@ -313,6 +347,7 @@ fun WorkspacesTab() {
                         if (ws.name != active) {
                             app.workspaceManager.setActive(ws.name)
                             app.workspaceChanged()
+                            onProjectChanged(ws.name)
                             scope.launch { refresh() }
                         }
                         openWs = ws.name
@@ -378,6 +413,7 @@ fun WorkspacesTab() {
                     renameTarget = null
                     if (new != null) {
                         app.fileService.setRoot(app.workspaceManager.activeRoot())
+                        onProjectChanged(app.workspaceManager.activeName())
                         openWs = new
                     }
                     scope.launch { refresh() }
@@ -404,6 +440,7 @@ private fun WorkspaceRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 64.dp)
             .clip(shape)
             .background(if (active) TileStoneSelected else TileStone)
             .border(
@@ -434,27 +471,11 @@ private fun WorkspaceRow(
                 color = TextSecondary,
             )
         }
-        Text(
-            text = "rename",
-            fontSize = 10.sp,
-            color = TextSecondary,
-            modifier = Modifier
-                .clip(RoundedCornerShape(4.dp))
-                .clickable(onClick = onRename)
-                .padding(horizontal = 6.dp, vertical = 5.dp),
-        )
+        TextButton(onClick = onRename) { Text("Rename") }
         if (!active) {
-            Text(
-                text = "delete",
-                fontSize = 10.sp,
-                color = AmberStatus,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable(onClick = onDelete)
-                    .padding(horizontal = 6.dp, vertical = 5.dp),
-            )
+            TextButton(onClick = onDelete) { Text("Delete", color = AmberStatus) }
         }
-        Text("Open ›", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+        Text("›", fontSize = 20.sp, color = TextPrimary)
     }
 }
 
@@ -493,6 +514,7 @@ private fun WorkspaceExplorer(
     // Search + sort + attach (M1.4h).
     var query by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf("name") } // name | size | date
+    var sortMenuOpen by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
     var createOpen by remember { mutableStateOf(false) }
 
@@ -633,6 +655,8 @@ private fun WorkspaceExplorer(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        Text("Files in $wsName", fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
+            color = TextPrimary, modifier = Modifier.padding(start = 14.dp, top = 10.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -641,7 +665,7 @@ private fun WorkspaceExplorer(
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             Text(
-                text = "$wsName  ▾",
+                text = "‹ Projects",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = TextPrimary,
@@ -660,7 +684,7 @@ private fun WorkspaceExplorer(
                 val parts = dir.split("/").filter { it.isNotEmpty() }
                 if (parts.isEmpty()) {
                     Text(
-                        text = "/ root",
+                        text = "Project root",
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         color = TextSecondary,
@@ -684,7 +708,7 @@ private fun WorkspaceExplorer(
                 }
             }
             Text(
-                text = if (createOpen) "close" else "+ new",
+                text = if (createOpen) "Cancel" else "+ New",
                 fontSize = 11.sp,
                 color = TextPrimary,
                 modifier = Modifier
@@ -723,23 +747,24 @@ private fun WorkspaceExplorer(
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = when {
-                    chipSt == null && !gitOpen -> "git · not initialized"
-                    chipSt == null -> "git"
-                    chipSt.clean -> "git · clean"
-                    else -> "git · ${chipSt.count} changed"
+                    chipSt == null && !gitOpen -> "Version history"
+                    chipSt == null -> "Version history"
+                    chipSt.clean -> "Version history · clean"
+                    else -> "Version history · ${chipSt.count} changed"
                 },
-                fontSize = 10.sp,
+                fontSize = 12.sp,
                 color = if (chipSt != null && !chipSt.clean) AmberStatus else TextSecondary,
             )
             Spacer(modifier = Modifier.weight(1f))
             Text(
-                text = "share zip",
-                fontSize = 9.sp,
+                text = "Export ZIP",
+                fontSize = 11.sp,
                 color = TextSecondary,
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
                     .clickable { shareZip() }
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                    .heightIn(min = 44.dp)
+                    .padding(horizontal = 6.dp, vertical = 14.dp),
             )
         }
 
@@ -923,7 +948,7 @@ private fun WorkspaceExplorer(
                 TextField(
                     value = query,
                     onValueChange = { query = it },
-                    placeholder = { Text("search files here", fontSize = 12.sp) },
+                    placeholder = { Text("Search this folder", fontSize = 13.sp) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                     colors = TextFieldDefaults.colors(
@@ -933,17 +958,19 @@ private fun WorkspaceExplorer(
                         unfocusedIndicatorColor = BevelLight,
                     ),
                 )
-                listOf("name", "size", "date").forEach { s ->
-                    Text(
-                        text = s,
-                        fontSize = 10.sp,
-                        color = if (sortBy == s) TextPrimary else TextSecondary,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(if (sortBy == s) TileStoneSelected else Color.Transparent)
-                            .clickable { sortBy = s }
-                            .padding(horizontal = 7.dp, vertical = 4.dp),
-                    )
+                androidx.compose.foundation.layout.Box {
+                    TextButton(onClick = { sortMenuOpen = true }) { Text("Sort: $sortBy") }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = sortMenuOpen,
+                        onDismissRequest = { sortMenuOpen = false },
+                    ) {
+                        listOf("name", "size", "date").forEach { option ->
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text(option.replaceFirstChar { it.uppercase() }) },
+                                onClick = { sortBy = option; sortMenuOpen = false },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -986,7 +1013,7 @@ private fun WorkspaceExplorer(
                 TextField(
                     value = newName,
                     onValueChange = { newName = it },
-                    placeholder = { Text("name", fontSize = 12.sp) },
+                    placeholder = { Text("File or folder name", fontSize = 12.sp) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                     colors = TextFieldDefaults.colors(
@@ -996,26 +1023,8 @@ private fun WorkspaceExplorer(
                         unfocusedIndicatorColor = BevelLight,
                     ),
                 )
-                Text(
-                    text = "file",
-                    fontSize = 10.sp,
-                    color = TextPrimary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(TileStone)
-                        .clickable { createEntry(isDir = false) }
-                        .padding(horizontal = 7.dp, vertical = 4.dp),
-                )
-                Text(
-                    text = "folder",
-                    fontSize = 10.sp,
-                    color = TextPrimary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(TileStone)
-                        .clickable { createEntry(isDir = true) }
-                        .padding(horizontal = 7.dp, vertical = 4.dp),
-                )
+                TextButton(onClick = { createEntry(isDir = false) }) { Text("File") }
+                TextButton(onClick = { createEntry(isDir = true) }) { Text("Folder") }
             }
 
             // Recently opened files (M1.4h).
@@ -1060,7 +1069,7 @@ private fun WorkspaceExplorer(
                 val list = entries ?: return@remember null
                 val q = query.trim().lowercase()
                 val filtered = if (q.isEmpty()) list
-                else list.filter { it.name.lowercase().contains(q) || it.isDirectory }
+                else list.filter { it.name.lowercase().contains(q) }
                 when (sortBy) {
                     "size" -> filtered.sortedWith(
                         compareByDescending<FileService.DirEntry> { it.isDirectory }.thenByDescending { it.sizeBytes },
@@ -1090,7 +1099,7 @@ private fun WorkspaceExplorer(
                     }
                     list.isEmpty() -> item(key = "empty") {
                         Text(
-                            text = if (query.isNotEmpty()) "(no matches)" else "(empty folder)",
+                            text = if (query.isNotEmpty()) "No matching files in this folder" else "This folder is empty. Tap + New to add a file or folder.",
                             fontSize = 12.sp,
                             color = TextSecondary,
                             modifier = Modifier.padding(vertical = 12.dp),
@@ -1131,6 +1140,7 @@ private fun ExplorerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 52.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(TileStone)
             .clickable(onClick = onOpen)
@@ -1140,9 +1150,9 @@ private fun ExplorerRow(
     ) {
         Text(
             text = if (entry.isDirectory) entry.name + "/" else entry.name,
-            fontSize = 12.sp,
+            fontSize = 14.sp,
             fontFamily = FontFamily.Monospace,
-            color = if (entry.isDirectory) TextPrimary else TextSecondary,
+            color = TextPrimary,
             modifier = Modifier.weight(1f),
             maxLines = 1,
         )
@@ -1152,15 +1162,9 @@ private fun ExplorerRow(
                 fontSize = 10.sp,
                 color = TextSecondary,
             )
-            Text(
-                text = "attach",
-                fontSize = 10.sp,
-                color = LinkRead,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable(onClick = onAttach)
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            )
+            TextButton(onClick = onAttach) { Text("Attach") }
+        } else {
+            Text("›", fontSize = 20.sp, color = TextSecondary)
         }
     }
 }

@@ -14,8 +14,8 @@ android {
         applicationId = "io.keepagent"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.1.0-m1.5"
+        versionCode = 10
+        versionName = "0.1.0-m1.6"
         vectorDrawables { useSupportLibrary = true }
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }

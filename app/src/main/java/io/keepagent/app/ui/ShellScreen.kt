@@ -72,6 +72,7 @@ import io.keepagent.app.ui.tabs.ConnectionsTab
 import io.keepagent.app.ui.tabs.ConsoleTab
 import io.keepagent.app.ui.tabs.TestTab
 import io.keepagent.app.ui.tabs.WorkspacesTab
+import io.keepagent.app.ui.tabs.SettingsTab
 import io.keepagent.app.ui.theme.AmberStatus
 import io.keepagent.app.ui.theme.BarChip
 import io.keepagent.app.ui.theme.BarDark
@@ -90,14 +91,15 @@ import io.keepagent.app.ui.theme.WallBase
 import io.keepagent.app.ui.theme.WallBrick
 
 /**
- * The shell: stone top bar (model header + 6 beveled tiles), then the active
- * tab over the subtle wall backdrop. Tab labels are the plain product names —
- * the theme is visual only (F-014).
+ * Four primary destinations; advanced screens are opened from Settings.
+ * Project selection stays available from the header on every screen.
  */
 @Composable
 fun KeepAgentShell() {
     val app = Holder.app
     var selected by rememberSaveable { mutableIntStateOf(0) }
+    var projectChooserRequest by remember { mutableIntStateOf(0) }
+    var activeProject by remember { mutableStateOf(app.workspaceManager.activeName()) }
     val savedPages = rememberSaveableStateHolder()
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     val isRunning by app.chatController.isRunning.collectAsState()
@@ -127,31 +129,29 @@ fun KeepAgentShell() {
         when {
             showDocs -> showDocs = false
             showChatHistory -> showChatHistory = false
-            selected in 3..5 -> selected = 6
+            selected in 3..5 || selected == 7 -> selected = 6
             else -> selected = 0
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(WallBase)) {
-        BrickWallBackdrop()
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .imePadding()
                 .navigationBarsPadding(),
         ) {
-        // A thin navy sky behind gray crenellations gives the shell the
-        // castle-wall silhouette from the visual direction without wasting
-        // scarce vertical space.
         Column(
             modifier = Modifier
                 .windowInsetsPadding(WindowInsets.statusBars)
                 .background(BarStone),
         ) {
-            CastleBattlements()
-            HeaderBar(
-                historyVisible = true,
+            ProductHeader(
+                selected = selected,
+                running = isRunning,
+                projectName = activeProject,
                 onHistory = { showChatHistory = true },
+                onProject = { projectChooserRequest++; selected = 2 },
             )
             HorizontalDivider(color = BevelLight, thickness = 1.dp)
         }
@@ -167,7 +167,8 @@ fun KeepAgentShell() {
                 ) != "true",
             )
         }
-        if (onboardingVisible && selected == 0) {
+        if (onboardingVisible && selected == 0 &&
+            (!app.modelConfigured() || app.workspaceManager.list().isEmpty())) {
             OnboardingCard(onGotoTab = { selected = it }, onDone = {
                 app.settingsStore.setString(
                     io.keepagent.core.settings.SettingsStore.NS_GENERAL,
@@ -197,12 +198,13 @@ fun KeepAgentShell() {
             savedPages.SaveableStateProvider(selected) {
             when (selected) {
                 0 -> ChatTab(onOpenFileInWorkspaces = { selected = 2 })
-                1 -> TestTab(onGotoChat = { selected = 0 })
-                2 -> WorkspacesTab()
-                3 -> ConsoleTab(app.eventBus, app.eventLog)
-                4 -> AddonsTab(app.addonManager, app.eventBus)
-                5 -> ConnectionsTab()
-                else -> ToolsTab(onNavigate={selected=it}, onDocs={showDocs=true})
+                1 -> TestTab(onGotoChat = { selected = 0 }, onGotoProjects = { selected = 2 })
+                2 -> WorkspacesTab(chooserRequest = projectChooserRequest, onProjectChanged = { activeProject = it })
+                3 -> ConsoleTab(app.eventBus, app.eventLog, onBack = { selected = 6 })
+                4 -> AddonsTab(app.addonManager, app.eventBus, onBack = { selected = 6 })
+                5 -> ConnectionsTab(onBack = { selected = 6 })
+                7 -> ToolsTab(onNavigate={selected=it}, onDocs={showDocs=true})
+                else -> SettingsTab(onNavigate={selected=it}, onDocs={showDocs=true})
             }
             }
             }
@@ -322,11 +324,6 @@ private fun OnboardingCard(onGotoTab: (Int) -> Unit, onDone: () -> Unit) {
     val app = Holder.app
     val modelOk = app.modelConfigured()
     val wsOk = runCatching { app.workspaceManager.list().isNotEmpty() }.getOrDefault(false)
-    val sentOk = app.settingsStore.getString(
-        io.keepagent.core.settings.SettingsStore.NS_GENERAL,
-        "firstMessageSent",
-    ) == "true"
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -340,23 +337,17 @@ private fun OnboardingCard(onGotoTab: (Int) -> Unit, onDone: () -> Unit) {
             fontWeight = FontWeight.SemiBold,
             color = TextPrimary,
         )
-        StepRow(
-            done = modelOk,
+        if (!modelOk) StepRow(
+            done = false,
             label = "connect a model",
             hint = if (modelOk) "ready" else "set base URL + model",
             onOpen = { onGotoTab(5) },
         )
-        StepRow(
-            done = wsOk,
+        if (!wsOk) StepRow(
+            done = false,
             label = "use a workspace",
             hint = if (wsOk) "ready" else "create one",
             onOpen = { onGotoTab(2) },
-        )
-        StepRow(
-            done = sentOk,
-            label = "send a first message",
-            hint = if (sentOk) "done" else "chat with the agent",
-            onOpen = { onGotoTab(0) },
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -420,10 +411,39 @@ private val TABS = listOf(
 
 private val PRIMARY_DESTINATIONS = listOf(
     Triple(0, "Chat", R.drawable.ic_tab_chat),
-    Triple(2, "Files", R.drawable.ic_tab_workspaces),
+    Triple(2, "Projects", R.drawable.ic_tab_workspaces),
     Triple(1, "Test", R.drawable.ic_tab_test),
-    Triple(6, "Tools", R.drawable.ic_tune),
+    Triple(6, "Settings", R.drawable.ic_tune),
 )
+
+@Composable
+private fun ProductHeader(selected: Int, running: Boolean, projectName: String,
+    onHistory: () -> Unit, onProject: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().background(BarStone).padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (selected == 0) {
+            IconButton(onClick = onHistory, modifier = Modifier.size(44.dp)) {
+                Icon(painterResource(R.drawable.ic_history), contentDescription = "Chat history", tint = TextPrimary)
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text("KeepAgent", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+            Text(if (running) "Agent working" else "Ready to work", fontSize = 11.sp,
+                color = if (running) AmberStatus else TextSecondary)
+        }
+        Text(
+            text = projectName.ifBlank { "Choose project" } + "  ▾",
+            maxLines = 1,
+            fontSize = 12.sp,
+            color = TextPrimary,
+            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(TileStone)
+                .clickable(onClick = onProject).padding(horizontal = 10.dp, vertical = 10.dp),
+        )
+    }
+}
 
 /** "1234" -> "1K", "999" -> "999" — compact token counts for the header chip. */
 private fun fmtK(n: Int): String = if (n >= 1000) "${(n + 500) / 1000}K" else "$n"

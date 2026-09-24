@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -100,11 +101,9 @@ import io.keepagent.app.ui.common.FileOpener
 import io.keepagent.app.ui.common.MarkdownText
 import io.keepagent.core.agent.AgentRun
 import io.keepagent.core.agent.RunActivity
-import io.keepagent.core.agent.ApprovalMode
 import io.keepagent.core.agent.ApprovalRequest
 import io.keepagent.core.agent.ToolLine
 import io.keepagent.core.fs.FileService
-import io.keepagent.core.settings.FileAccess
 import io.keepagent.core.settings.SettingsStore
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -156,9 +155,6 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
 
     var showFilePicker by remember { mutableStateOf(false) }
     var zoomImage by remember { mutableStateOf<ImagePart?>(null) }
-    var showChatSettings by remember { mutableStateOf(false) }
-    // Measured input-bar height (px) — anchors the floating settings popup.
-    var inputBarHeightPx by remember { mutableStateOf(0) }
     val snack = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
@@ -222,10 +218,15 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-        // Model / approval / file-access chips moved out of the header into
-        // the bottom-right settings popup (2026-09-03); the header keeps the
-        // dedicated top-left history icon + the current session title.
-        ChatHeader(sessionTitle = sessionTitle)
+        ChatHeader(
+            sessionTitle = sessionTitle,
+            modelLabel = modelId ?: "Choose model",
+            models = models,
+            currentModel = modelId,
+            modelsError = modelsError,
+            onModelSelected = controller::selectModel,
+            onRetryModels = { controller.refreshModels(force = true) },
+        )
         HorizontalDivider(color = TextSecondary.copy(alpha = 0.2f), thickness = 1.dp)
 
         Box(
@@ -243,9 +244,9 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
                 item(key = "empty") {
                     Text(
                         text = if (modelId == null)
-                            "No model selected — add an endpoint in the Connections tab, then pick a model in the chip above."
+                            "No model selected. Add a provider in Settings → AI model, then choose a model above."
                         else
-                            "Describe what to build. The agent can read, write, and search files in the workspace.",
+                            "Describe what to build. The agent can read, write, and search files in the active project.",
                         fontSize = 12.sp,
                         color = TextSecondary,
                         modifier = Modifier.padding(vertical = 24.dp, horizontal = 6.dp),
@@ -304,14 +305,6 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
             }
         }
 
-        // The input bar's height is measured so the floating settings popup
-        // can anchor just above it (2026-09-03) — the bar grows when
-        // attachments are staged, and the popup must follow.
-        Box(
-            modifier = Modifier.onGloballyPositioned { coords ->
-                inputBarHeightPx = coords.size.height
-            },
-        ) {
         InputBar(
             value = input,
             onValueChange = { input = it },
@@ -333,7 +326,6 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
             onAttachFile = { showFilePicker = true },
             onAttachDocument = { docPicker.launch(arrayOf("*/*")) },
         )
-        }
 
         // The chat-history sidebar itself is rendered by the shell
         // (ShellScreen), so it can slide in over the full screen (2026-09-03).
@@ -354,81 +346,6 @@ fun ChatTab(onOpenFileInWorkspaces: (String) -> Unit = {}) {
         }
         SnackbarHost(snack, modifier = Modifier.align(Alignment.BottomStart))
 
-        // Settings popup (2026-09-03): a SMALL floating card anchored bottom
-        // right, just above the input bar — an overlay, so opening it never
-        // pushes or cuts the chat list. The scrim sits ABOVE the chat, so
-        // any outside tap closes it; the panel itself stays interactive.
-        if (showChatSettings) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable { showChatSettings = false },
-            )
-        }
-        // contentAlignment (not Modifier.align) — Modifier.align silently
-        // no-ops for this overlay in this Compose build (2026-09-03 debug).
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.BottomEnd,
-        ) {
-            if (showChatSettings) {
-                Box(
-                    modifier = Modifier.padding(
-                        end = 10.dp,
-                        bottom = with(LocalDensity.current) { (inputBarHeightPx + 24).toDp() },
-                    ),
-                ) {
-                ChatSettingsPanel(
-                    modelLabel = modelId ?: "no model configured",
-                    models = models,
-                    currentModel = modelId,
-                    modelsError = modelsError,
-                    onModelSelected = { id ->
-                        controller.selectModel(id)
-                        showChatSettings = false
-                    },
-                    onRetryModels = { controller.refreshModels(force = true) },
-                    approvalMode = ApprovalMode.from(
-                        app.settingsStore.getString(SettingsStore.NS_GENERAL, "approvalMode"),
-                    ),
-                    onApprovalMode = { mode ->
-                        app.settingsStore.setString(SettingsStore.NS_GENERAL, "approvalMode", mode.name)
-                        showChatSettings = false
-                    },
-                    fileAccess = FileAccess.from(
-                        app.settingsStore.getString(SettingsStore.NS_GENERAL, "fileAccess"),
-                    ),
-                    onFileAccess = { access ->
-                        app.settingsStore.setString(SettingsStore.NS_GENERAL, "fileAccess", access.name)
-                        app.fileService.setMode(access)
-                    },
-                    onDismiss = { showChatSettings = false },
-                )
-                }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .padding(
-                            end = 10.dp,
-                            bottom = with(LocalDensity.current) { (inputBarHeightPx + 24).toDp() },
-                        )
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(TileStone)
-                        .clickable { showChatSettings = true }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_tune),
-                        contentDescription = "chat settings",
-                        tint = TextPrimary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Text("settings", fontSize = 12.sp, color = TextPrimary)
-                }
-            }
-        }
         zoomImage?.let { part -> ZoomImageDialog(part, onDismiss = { zoomImage = null }) }
     }
 }
@@ -538,14 +455,17 @@ private fun ChatFastScroller(state: LazyListState, modifier: Modifier = Modifier
 // -- header ------------------------------------------------------------------
 
 /**
- * Slim chat header (2026-09-03): the active session title. The dedicated
- * history button lives in the shell's top status strip (top left, next to
- * the speed readout); model, approval and file-access controls live in the
- * settings popup above the input bar.
+ * Session title and the one control needed during a conversation: model choice.
  */
 @Composable
 private fun ChatHeader(
     sessionTitle: String,
+    modelLabel: String,
+    models: List<io.keepagent.addonsapi.llm.LlmModel>,
+    currentModel: String?,
+    modelsError: String?,
+    onModelSelected: (String) -> Unit,
+    onRetryModels: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -561,57 +481,7 @@ private fun ChatHeader(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-    }
-}
-
-/**
- * The model / approval / file-access popup (2026-09-03): a compact panel at
- * the bottom right, just above the input bar, opened from the tune button.
- */
-@Composable
-private fun ChatSettingsPanel(
-    modelLabel: String,
-    models: List<io.keepagent.addonsapi.llm.LlmModel>,
-    currentModel: String?,
-    modelsError: String?,
-    onModelSelected: (String) -> Unit,
-    onRetryModels: () -> Unit,
-    approvalMode: ApprovalMode,
-    onApprovalMode: (ApprovalMode) -> Unit,
-    fileAccess: FileAccess,
-    onFileAccess: (FileAccess) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    // 2026-09-03: the card SELF-SIZES to the three controls. (fillMaxSize
-    // stretched it to the full chat height, leaving a huge empty slab —
-    // no fixed width, no matchParentSize shadow.) Closes on any outside
-    // tap (scrim) or on a selection.
-    Column(
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(BarChip)
-            .border(width = 1.dp, color = BevelLight.copy(alpha = 0.5f), shape = RoundedCornerShape(10.dp))
-            .padding(7.dp),
-        horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
         ModelChip(modelLabel, models, currentModel, modelsError, onModelSelected, onRetryModels)
-        ModeChip(
-            label = "approval: ${approvalMode.name.lowercase().replace('_', '-')}",
-            options = ApprovalMode.entries.map { it.name.lowercase().replace('_', '-') },
-            onPick = { s ->
-                onApprovalMode(
-                    ApprovalMode.entries.first { it.name.lowercase().replace('_', '-') == s },
-                )
-            },
-        )
-        ModeChip(
-            label = "files: ${fileAccess.name.lowercase()}",
-            options = FileAccess.entries.map { it.name.lowercase() },
-            onPick = { s ->
-                onFileAccess(FileAccess.entries.first { it.name.lowercase() == s })
-            },
-        )
     }
 }
 
@@ -714,34 +584,16 @@ private fun ModelChip(
 }
 
 @Composable
-private fun ModeChip(label: String, options: List<String>, onPick: (String) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        Chip(text = label, onClick = { open = true })
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    text = { Text(option, fontSize = 12.sp) },
-                    onClick = {
-                        onPick(option)
-                        open = false
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun Chip(text: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
+            .widthIn(max = 175.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(TileStone)
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 5.dp),
     ) {
-        Text(text, fontSize = 11.sp, color = TextPrimary)
+        Text(text, fontSize = 11.sp, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1594,7 +1446,7 @@ private fun InputBar(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("file or folder from workspace", fontSize = 12.sp) },
+                        text = { Text("file or folder from this project", fontSize = 12.sp) },
                         onClick = {
                             attachMenu = false
                             onAttachFile()
@@ -1971,7 +1823,7 @@ private fun AttachFilePicker(
                     }
                 }
                 Text(
-                    text = "workspace: $dir",
+                    text = "project: $dir",
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     color = TextPrimary,

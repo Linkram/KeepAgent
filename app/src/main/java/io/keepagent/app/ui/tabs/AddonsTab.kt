@@ -9,11 +9,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -42,15 +45,22 @@ import io.keepagent.app.ui.theme.UserBubble
  * init → invoke) without an LLM in the loop (spec §13 M0).
  */
 @Composable
-fun AddonsTab(manager: AddonManager, eventBus: EventBus) {
+fun AddonsTab(manager: AddonManager, eventBus: EventBus, onBack: () -> Unit = {}) {
     val records by manager.recordsFlow.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
+        TextButton(onClick = onBack, modifier = Modifier.padding(start = 8.dp, top = 4.dp)) { Text("‹ Settings") }
         Text(
-            text = "Tier-2 sandbox: quickjs-ng (helper process :js, M1) · Add-on API v1",
-            fontSize = 10.sp,
+            text = "Tools & add-ons",
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
+        )
+        Text(
+            text = "Installed extensions make more actions available to the agent. Turn off any you don't want it to use.",
+            style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
         if (records.isEmpty()) {
             Text(
@@ -70,10 +80,12 @@ fun AddonsTab(manager: AddonManager, eventBus: EventBus) {
 
 @Composable
 private fun AddonCard(record: AddonRecord, manager: AddonManager) {
+    var details by remember(record.id) { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(TileStone.copy(alpha = 0.5f)),
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -83,11 +95,6 @@ private fun AddonCard(record: AddonRecord, manager: AddonManager) {
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = TextPrimary,
-                )
-                Text(
-                    text = record.id + "  v" + (record.manifest?.version ?: "—") + "  ·  tier " + (record.manifest?.tier ?: "—"),
-                    fontSize = 10.sp,
-                    color = TextSecondary,
                 )
             }
             StatusChip(record.status)
@@ -119,34 +126,33 @@ private fun AddonCard(record: AddonRecord, manager: AddonManager) {
                 }
             }
         }
-        record.statusDetail?.let {
-            Text(
-                text = it,
-                fontSize = 10.sp,
-                color = TextSecondary,
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
-            )
-        }
         if (record.tools.isNotEmpty()) {
             Text(
-                text = "tools: ${record.tools.joinToString(", ")}",
-                fontSize = 10.sp,
+                text = "Tools: ${record.tools.joinToString(", ")}",
+                fontSize = 12.sp,
                 color = TextSecondary,
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
             )
         }
-        if (record.status == AddonStatus.INITIALIZED && "hello" in record.tools) {
-            HelloToolDemo(record.id)
+        TextButton(onClick = { details = !details }, modifier = Modifier.padding(start = 4.dp)) {
+            Text(if (details) "Hide details" else "Details")
         }
-        if (record.validationErrors.isNotEmpty()) {
-            record.validationErrors.forEach { err ->
+        if (details) {
+            Text("${record.id} · v${record.manifest?.version ?: "unknown"} · tier ${record.manifest?.tier ?: "unknown"}",
+                fontSize = 11.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 12.dp))
+            record.statusDetail?.let {
                 Text(
-                    text = "✗ $err",
-                    fontSize = 10.sp,
-                    color = Color(0xFFE57373),
+                    text = it,
+                    fontSize = 11.sp,
+                    color = TextSecondary,
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
                 )
             }
+            record.validationErrors.forEach { err ->
+                Text("✗ $err", fontSize = 11.sp, color = Color(0xFFE57373),
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 4.dp))
+            }
+            if (record.status == AddonStatus.INITIALIZED && "hello" in record.tools) HelloToolDemo(record.id)
         }
         Spacer(modifier = Modifier.height(4.dp))
     }
@@ -155,15 +161,15 @@ private fun AddonCard(record: AddonRecord, manager: AddonManager) {
 @Composable
 private fun StatusChip(status: AddonStatus) {
     val (label, color) = when (status) {
-        AddonStatus.INITIALIZED -> "initialized" to Color(0xFF8BC34A)
-        AddonStatus.ENABLED -> "enabled" to Color(0xFF8BC34A)
-        AddonStatus.VALID -> "valid" to Color(0xFFE0B84C)
-        AddonStatus.INVALID, AddonStatus.FAILED -> "failed" to Color(0xFFE57373)
-        AddonStatus.UNAVAILABLE -> "unavailable" to Color(0xFFE57373)
-        AddonStatus.DISABLED -> "disabled" to TextSecondary
-        else -> "discovered" to TextSecondary
+        AddonStatus.INITIALIZED -> "Ready" to Color(0xFF8BC34A)
+        AddonStatus.ENABLED -> "On" to Color(0xFF8BC34A)
+        AddonStatus.VALID -> "Valid" to Color(0xFFE0B84C)
+        AddonStatus.INVALID, AddonStatus.FAILED -> "Needs attention" to Color(0xFFE57373)
+        AddonStatus.UNAVAILABLE -> "Unavailable" to Color(0xFFE57373)
+        AddonStatus.DISABLED -> "Off" to TextSecondary
+        else -> "Found" to TextSecondary
     }
-    Text(label.uppercase(), fontSize = 10.sp, color = color, fontWeight = FontWeight.SemiBold)
+    Text(label, fontSize = 11.sp, color = color, fontWeight = FontWeight.SemiBold)
 }
 
 /**

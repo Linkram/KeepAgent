@@ -72,7 +72,7 @@ higher Android `versionCode`, the app downloads it, checks the release size and
 APK package/version/signing certificate (plus GitHub's SHA-256 digest when
 available), and asks you to install it through Android. Android requires your
 confirmation and may first ask you to allow installs from KeepAgent. The
-Connections tab's **general** section also has **Check for app updates** for
+**Settings → App updates → Check for updates** also offers
 an immediate retry. Offline launches continue normally.
 
 Publish one APK asset named `keepagent-v<versionCode>.apk` in each GitHub release;
@@ -82,7 +82,7 @@ every release.
 
 ## Other phone apps
 
-In **Tools → Other phone apps**, choose **Ask each action** or explicitly allow
+In **Settings → Other phone apps**, choose **Ask each action** or explicitly allow
 **Full access**, then enable KeepAgent in Android's Accessibility settings.
 The default is **Off**. In ask mode, every `phone_ui` call, including reading
 the foreground screen, requires approval; Android notifications must be on to
@@ -160,8 +160,8 @@ Settings keys (namespaced JSON in `SettingsStore`):
   `grep`) behind the Tier-1 `tools-core` add-on. The ADR-0002 toggle in the
   header confines every path to the active workspace (escapes are blocked
   and logged) or lifts it.
-- **Workspaces**: `core/workspace` — one active workspace, create/switch/
-  delete from the Workspaces tab; the selection survives restarts. Switching
+- **Projects**: `core/workspace` — one active project, create/switch/
+  delete from the Projects tab; the selection survives restarts. Switching
   re-roots the file service.
 - **Sandbox in a helper process (spec §13, ADR-0001)**: the quickjs-ng
   engines run in the `:js` process behind a small AIDL boundary
@@ -183,7 +183,7 @@ Settings keys (namespaced JSON in `SettingsStore`):
   **Retry fetch** on failure, and a type-it fallback as a last resort). The
   Connections dialog's **Fetch models** fills the Model field from the same
   list.
-- **Test tab (M1.2)**: a local browser (WebView) renders workspace HTML —
+- **Test tab (M1.2)**: separate Checks, Preview, and Results views. A local browser (WebView) renders workspace HTML —
   path field, the workspace's `.html` files as one-tap chips, Load.
   **Send screenshot to agent** captures the on-screen page via `PixelCopy`,
   attaches the PNG to the next chat message, and opens Chat.
@@ -197,7 +197,7 @@ Settings keys (namespaced JSON in `SettingsStore`):
 ## Module map
 
 ```
-app          Compose shell: 6 tabs, theme, wiring, ChatController (io.keepagent)
+app          Compose shell: Chat, Projects, Test, Settings; theme, wiring, ChatController (io.keepagent)
 addons-api   Addon API v1 contract — pure Kotlin/JVM, no Android
 core/llm     OpenAI-compatible SSE client (streaming, tools, reasoning)
 core/agent   AgentLoop, AgentRun, ApprovalGate (ask / auto-allow / never-ask)

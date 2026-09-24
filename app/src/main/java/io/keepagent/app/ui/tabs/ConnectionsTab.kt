@@ -88,7 +88,7 @@ import javax.net.ssl.SSLException
  * connection powers the model profile the provider and chat read.
  */
 @Composable
-fun ConnectionsTab() {
+fun ConnectionsTab(onBack: () -> Unit = {}) {
     val app = Holder.app
     val store = app.connections
     var list by remember { mutableStateOf(store.list()) }
@@ -119,16 +119,16 @@ fun ConnectionsTab() {
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            TextButton(onClick = onBack) { Text("‹ Settings") }
             Text(
-                text = "Model providers",
-                fontSize = 14.sp,
+                text = "AI models",
+                fontSize = 20.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = TextPrimary,
             )
             Text(
-                text = "Connect an OpenAI-compatible endpoint, then choose which models to make available in Chat. " +
-                    "Context length and future model settings are stored per model.",
-                fontSize = 11.sp,
+                text = "Add a provider, then choose a model in Chat.",
+                fontSize = 13.sp,
                 color = TextSecondary,
             )
             OutlinedButton(onClick = { creating = true }) {
@@ -143,8 +143,6 @@ fun ConnectionsTab() {
                 Text("Add provider")
             }
         }
-
-        GeneralSection(app)
 
         if (list.isEmpty()) {
             Box(
@@ -664,9 +662,9 @@ private fun ConnectionDialog(
  * context gauge read the same keys.
  */
 @Composable
-private fun GeneralSection(app: KeepAgentApp) {
+fun GeneralSection(app: KeepAgentApp) {
     val store = app.settingsStore
-    var open by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(true) }
     val sendOnEnter = store.getString(SettingsStore.NS_GENERAL, "sendOnEnter") == "true"
     val verbose = store.getString(SettingsStore.NS_GENERAL, "llmLogVerbose") == "true"
     val maxRetries = store.getString(SettingsStore.NS_MODEL, "maxRetries") ?: "1"
@@ -683,7 +681,7 @@ private fun GeneralSection(app: KeepAgentApp) {
     ) {
         Text(text = if (open) "▾" else "▸", fontSize = 10.sp, color = TextSecondary)
         Spacer(modifier = Modifier.width(6.dp))
-        Text(text = "general", fontSize = 11.sp, color = TextSecondary)
+        Text(text = "Preferences & backup", fontSize = 14.sp, color = TextPrimary)
     }
 
     if (open) {
@@ -726,7 +724,6 @@ private fun GeneralSection(app: KeepAgentApp) {
                 onCommit = { store.setString(SettingsStore.NS_MODEL, "timeoutSeconds", it) },
             )
             BackupRow(app)
-            AppUpdateControl()
         }
     }
 }

@@ -13,7 +13,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import io.keepagent.app.Holder
-import io.keepagent.app.phoneui.PhoneUiAccessCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,8 +47,9 @@ fun ToolsTab(onNavigate: (Int) -> Unit, onDocs: () -> Unit) {
         }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement=Arrangement.spacedBy(16.dp)) {
-        Text("Your development tools", style=MaterialTheme.typography.headlineSmall, color=TextPrimary)
-        Text("Manage local capabilities and inspect the agent’s work.", style=MaterialTheme.typography.bodyMedium, color=TextSecondary)
+        TextButton(onClick = { onNavigate(6) }) { Text("‹ Settings") }
+        Text("Local & desktop tools", style=MaterialTheme.typography.headlineSmall, color=TextPrimary)
+        Text("The bundled tools work on this phone. Pair a computer only when a task needs it.", style=MaterialTheme.typography.bodyMedium, color=TextSecondary)
         OutlinedButton(onClick = {
             if (android.os.Build.VERSION.SDK_INT >= 33 &&
                 androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -59,14 +59,6 @@ fun ToolsTab(onNavigate: (Int) -> Unit, onDocs: () -> Unit) {
                     .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
             }
         }) { Text("Background notifications") }
-        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick={ onNavigate(5) }, modifier=Modifier.weight(1f)) { Text("Models") }
-            OutlinedButton(onClick={ onNavigate(4) }, modifier=Modifier.weight(1f)) { Text("Add-ons") }
-        }
-        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick={ onNavigate(3) }, modifier=Modifier.weight(1f)) { Text("Activity log") }
-            OutlinedButton(onClick=onDocs, modifier=Modifier.weight(1f)) { Text("Help") }
-        }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement=Arrangement.spacedBy(10.dp)) {
                 Text("On this phone", style=MaterialTheme.typography.titleLarge)
@@ -85,7 +77,6 @@ fun ToolsTab(onNavigate: (Int) -> Unit, onDocs: () -> Unit) {
                 ) { Text("Verify local runtimes") }
             }
         }
-        PhoneUiAccessCard()
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Text("Desktop runner add-on", style=MaterialTheme.typography.titleLarge)

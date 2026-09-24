@@ -55,8 +55,13 @@ fun AppUpdateControl() {
     val updates = remember { AppUpdates.get(context) }
     val state by updates.state.collectAsState()
     val scope = rememberCoroutineScope()
+    var permissionMessage by remember { mutableStateOf(false) }
+    val installedVersion = remember(context.packageName) {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull()
+    }
+    Text("Installed: ${installedVersion ?: "unknown"}")
     OutlinedButton(onClick = { scope.launch { updates.check(force = true) } }, enabled = state !is UpdateState.Checking && state !is UpdateState.Downloading) {
-        Text("Check for app updates")
+        Text("Check for updates")
     }
     when (val current = state) {
         is UpdateState.Checking -> Text("Checking GitHub releases…")
@@ -66,7 +71,8 @@ fun AppUpdateControl() {
         }
         is UpdateState.Ready -> {
             Text("${current.update.versionName} is ready to install")
-            Button(onClick = { updates.install() }) { Text("Install update") }
+            Button(onClick = { permissionMessage = !updates.install() }) { Text("Install update") }
+            if (permissionMessage) Text("Allow installs from KeepAgent in Android settings, then tap Install update again.")
         }
         is UpdateState.UpToDate -> Text("App is up to date")
         is UpdateState.Error -> Text(current.message)

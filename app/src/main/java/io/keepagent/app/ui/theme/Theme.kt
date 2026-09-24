@@ -1,6 +1,7 @@
 package io.keepagent.app.ui.theme
 
 import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -66,6 +67,7 @@ fun KeepAgentTheme(content: @Composable () -> Unit) {
         // fontFamily (monospace for code) keeps it.
         CompositionLocalProvider(
             LocalTextStyle provides LocalTextStyle.current.copy(fontFamily = KeepFont),
+            LocalContentColor provides TextPrimary,
         ) {
             content()
         }

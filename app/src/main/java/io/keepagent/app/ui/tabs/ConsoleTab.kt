@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.core.content.FileProvider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -64,7 +65,7 @@ import java.util.Locale
  * on disk is the source of truth for reload.
  */
 @Composable
-fun ConsoleTab(eventBus: EventBus, eventLog: EventLog) {
+fun ConsoleTab(eventBus: EventBus, eventLog: EventLog, onBack: () -> Unit = {}) {
     var events by remember { mutableStateOf(emptyList<AgentEvent>()) }
     var filter by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf<EventKind?>(null) }
@@ -136,9 +137,10 @@ fun ConsoleTab(eventBus: EventBus, eventLog: EventLog) {
     val shown = visible(events, filter, kind)
 
     Column(modifier = Modifier.fillMaxSize()) {
+        TextButton(onClick = onBack, modifier = Modifier.padding(start = 8.dp, top = 4.dp)) { Text("‹ Settings") }
         Text(
-            text = "Event stream — append-only, JSONL on disk",
-            fontSize = 10.sp,
+            text = "Activity log · recent agent actions",
+            fontSize = 13.sp,
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
         )
