@@ -88,7 +88,8 @@ fun SettingsTab(onNavigate: (Int) -> Unit, onDocs: () -> Unit) {
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                            listOf(preview.wall, preview.bar, preview.user).forEach { color ->
+                            listOf(preview.wall, preview.selected, preview.user,
+                                preview.amber, preview.accent3).forEach { color ->
                                 Box(Modifier.size(14.dp).clip(RoundedCornerShape(4.dp)).background(color))
                             }
                         }
@@ -96,6 +97,10 @@ fun SettingsTab(onNavigate: (Int) -> Unit, onDocs: () -> Unit) {
                         if (active) Text(if (id == ThemeState.RANDOM) "Reroll ↻" else "Selected",
                             color = TextSecondary, style = MaterialTheme.typography.labelSmall)
                     }
+                }
+                if (ThemeState.selected == ThemeState.RANDOM) {
+                    Text("Current mix: ${ThemeState.harmonyName()}",
+                        color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
